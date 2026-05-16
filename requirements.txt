@@ -1,0 +1,6 @@
+flask>=3.0
+flask-cors>=4.0
+torch>=2.1
+wfdb>=4.1
+pandas>=2.1
+numpy>=1.26
