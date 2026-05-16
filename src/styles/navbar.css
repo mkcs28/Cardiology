@@ -98,7 +98,7 @@
 /* Dropdown */
 .dropdown {
   position: absolute;
-  top: calc(100% + 8px);
+  top: 100%;
   left: 50%;
   transform: translateX(-50%) translateY(-8px);
   background: white;
@@ -111,6 +111,20 @@
   pointer-events: none;
   transition: all 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
   z-index: 100;
+  /* Extra top padding so the hover bridge covers the gap */
+  padding-top: 8px;
+  margin-top: 0;
+}
+
+/* Invisible bridge between trigger and dropdown to prevent hover gap */
+.dropdown-trigger::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 12px;
+  background: transparent;
 }
 
 .dropdown-trigger:hover .dropdown {
@@ -223,6 +237,9 @@
 }
 
 .mobile-menu-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   display: block;
   padding: 12px 0;
   font-size: 0.95rem;
@@ -234,6 +251,16 @@
 
 .mobile-menu-link:last-child {
   border-bottom: none;
+}
+
+.mobile-link-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: color 0.2s ease;
+}
+
+.mobile-menu-link:hover .mobile-link-icon {
+  color: var(--blue);
 }
 
 .mobile-menu-link:hover {
