@@ -32,13 +32,13 @@ export default function CardioCalculator() {
         <div className="container">
           <div className="page-hero-inner">
             <div className="page-hero-text">
-              <p className="section-label">❤️ Cardiovascular Risk</p>
+              <p className="section-label" style={{display:"inline-flex",alignItems:"center",gap:6}}><svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg> Cardiovascular Risk</p>
               <h1 className="page-hero-title">Cardio Risk Calculator</h1>
               <p className="page-hero-subtitle">
                 Enter patient parameters for AI-powered cardiovascular risk prediction.
               </p>
             </div>
-            <div className="page-hero-badge">🔬 AI-Powered · Clinical Grade</div>
+            <div className="page-hero-badge" style={{display:"inline-flex",alignItems:"center",gap:6}}><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M7 19c-1.1 0-2 .9-2 2h14c0-1.1-.89-2-2-2h-4v-2h3c1.1 0 2-.9 2-2h-8c-1.66 0-3-1.34-3-3 0-1.09.59-2.04 1.46-2.56C8.17 9.03 8 8.54 8 8c0-.21.04-.42.09-.62C6.28 8.13 5 9.92 5 12c0 2.76 2.24 5 5 5v2H7z"/></svg> AI-Powered · Clinical Grade</div>
           </div>
         </div>
       </div>
@@ -76,7 +76,7 @@ export default function CardioCalculator() {
                   {['male', 'female'].map(g => (
                     <button key={g} className={`toggle-btn${form.gender === g ? ' active' : ''}`}
                       onClick={() => set('gender', g)}>
-                      {g === 'male' ? '♂ Male' : '♀ Female'}
+                      {g === 'male' ? 'Male' : 'Female'}
                     </button>
                   ))}
                 </div>
@@ -130,7 +130,7 @@ export default function CardioCalculator() {
                   {['no', 'former', 'yes'].map(s => (
                     <button key={s} className={`toggle-btn${form.smoking === s ? ' active' : ''}`}
                       onClick={() => set('smoking', s)}>
-                      {s === 'no' ? '✓ No' : s === 'former' ? '⏸ Former' : '✕ Yes'}
+                      {s === 'no' ? 'No' : s === 'former' ? 'Former' : 'Yes'}
                     </button>
                   ))}
                 </div>
@@ -177,7 +177,7 @@ export default function CardioCalculator() {
                   {['no', 'yes'].map(v => (
                     <button key={v} className={`toggle-btn${form.familyHistory === v ? ' active' : ''}`}
                       onClick={() => set('familyHistory', v)}>
-                      {v === 'no' ? '✓ No History' : '⚠ Yes, History'}
+                      {v === 'no' ? 'No History' : 'Yes, History'}
                     </button>
                   ))}
                 </div>
@@ -190,23 +190,23 @@ export default function CardioCalculator() {
                 borderRadius: 'var(--radius-sm)', padding: '12px 16px',
                 color: '#C62828', fontSize: '0.85rem', marginBottom: 16,
               }}>
-                ❌ {error}
+                {error}
               </div>
             )}
 
             <button className="calc-submit-btn" onClick={handleSubmit} disabled={loading}>
-              {loading ? '🔄 Analysing via API…' : '🔬 Predict Cardiovascular Risk'}
+              {loading ? 'Analysing via API…' : 'Predict Cardiovascular Risk'}
             </button>
           </div>
 
           {/* ── PREDICTION PANEL ─────────────────────────── */}
           <div className="prediction-panel">
             <div className="prediction-card">
-              <h3 className="prediction-card-title">📊 Risk Assessment</h3>
+              <h3 className="prediction-card-title">Risk Assessment</h3>
 
               {!result && !loading && !error && (
                 <div className="prediction-placeholder">
-                  <div className="prediction-placeholder-icon">❤️</div>
+                  <div className="prediction-placeholder-icon"><svg viewBox="0 0 24 24" fill="currentColor" width="36" height="36" style={{color:"var(--blue)"}}><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></div>
                   <p className="prediction-placeholder-text">
                     Fill in patient parameters and click "Predict" to view the risk assessment.
                   </p>
@@ -215,7 +215,7 @@ export default function CardioCalculator() {
 
               {loading && (
                 <div className="prediction-placeholder">
-                  <div className="prediction-placeholder-icon">🔄</div>
+                  <div className="prediction-placeholder-icon"><svg viewBox="0 0 24 24" fill="currentColor" width="36" height="36" style={{color:"var(--blue)"}} className="spin-icon"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg></div>
                   <p className="prediction-placeholder-text">Sending to backend API…</p>
                 </div>
               )}
@@ -239,7 +239,7 @@ export default function CardioCalculator() {
                   </div>
 
                   <div className={`risk-category-badge ${category}`}>
-                    {{ low: '✅ Low Risk', moderate: '⚠️ Moderate Risk', high: '🔴 High Risk' }[category]}
+                    {{ low: 'Low Risk', moderate: 'Moderate Risk', high: 'High Risk' }[category]}
                   </div>
 
                   <div className="confidence-bar-wrap">
@@ -272,7 +272,7 @@ export default function CardioCalculator() {
             {result && !loading && (
               <div className="prediction-card">
                 <div className="recommendation-panel">
-                  <h4 className="rec-title">💡 Clinical Recommendations</h4>
+                  <h4 className="rec-title">Clinical Recommendations</h4>
                   <ul className="rec-list">
                     {result.recommendations.map((r, i) => (
                       <li key={i} className="rec-item">
@@ -288,7 +288,7 @@ export default function CardioCalculator() {
               <div className="prediction-card"
                 style={{ background: 'linear-gradient(135deg,rgba(30,136,229,0.04),rgba(38,166,154,0.04))' }}>
                 <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 10 }}>
-                  ⚠️ Disclaimer
+                  Disclaimer
                 </h4>
                 <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.65 }}>
                   For research and educational purposes only. Always consult a qualified healthcare

@@ -6,9 +6,9 @@ import { useApi } from '../api/useApi';
 
 // ── Static model metadata (mirrors backend MODEL_REGISTRY) ───
 const MODELS = [
-  { id: 'te',       name: 'TE Transformer',  desc: 'Temporal Encoding transformer for time-series ECG analysis', acc: '96.2%', icon: '⚡' },
-  { id: 'gat',      name: 'GAT Transformer', desc: 'Graph Attention Network for relational pattern learning',     acc: '97.1%', icon: '🔗' },
-  { id: 'proposed', name: 'Proposed Model',  desc: 'Hybrid TE + GAT ensemble with superior accuracy',            acc: '98.7%', icon: '🏆' },
+  { id: 'te',       name: 'TE Transformer',  desc: 'Temporal Encoding transformer for time-series ECG analysis', acc: '96.2%', icon: 'bolt' },
+  { id: 'gat',      name: 'GAT Transformer', desc: 'Graph Attention Network for relational pattern learning',     acc: '97.1%', icon: 'link' },
+  { id: 'proposed', name: 'Proposed Model',  desc: 'Hybrid TE + GAT ensemble with superior accuracy',            acc: '98.7%', icon: 'trophy' },
 ];
 
 const LEAD_LABELS = ['Lead I', 'Lead II', 'Lead III', 'aVR', 'aVL', 'aVF'];
@@ -92,13 +92,13 @@ export default function ECGCalculator() {
         <div className="container">
           <div className="page-hero-inner">
             <div className="page-hero-text">
-              <p className="section-label">📊 ECG Analysis</p>
+              <p className="section-label" style={{display:"inline-flex",alignItems:"center",gap:6}}><svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4zm2.5 2.1h-15V5h15v14.1zm0-16.1h-15C4.22 3 3 4.22 3 5.5v13C3 19.78 4.22 21 5.5 21h15c1.28 0 2.5-1.22 2.5-2.5v-13C23 4.22 21.78 3 20.5 3z"/></svg> ECG Analysis</p>
               <h1 className="page-hero-title">ECG Calculator</h1>
               <p className="page-hero-subtitle">
                 AI-powered ECG signal analysis using advanced transformer models.
               </p>
             </div>
-            <div className="page-hero-badge">🤖 Deep Learning · Arrhythmia Detection</div>
+            <div className="page-hero-badge" style={{display:"inline-flex",alignItems:"center",gap:6}}><svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><path d="M20 9V7c0-1.1-.9-2-2-2h-3c0-1.66-1.34-3-3-3S9 3.34 9 5H6c-1.1 0-2 .9-2 2v2c-1.66 0-3 1.34-3 3s1.34 3 3 3v4c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2v-4c1.66 0 3-1.34 3-3s-1.34-3-3-3z"/></svg> Deep Learning · Arrhythmia Detection</div>
           </div>
         </div>
       </div>
@@ -118,7 +118,12 @@ export default function ECGCalculator() {
                 className={`model-select-card${selectedModel === m.id ? ' active' : ''}`}
                 onClick={() => { setSelectedModel(m.id); reset(); }}
               >
-                <div className="model-select-name">{m.icon} {m.name}</div>
+                <div className="model-select-name">
+                  {m.icon === 'bolt' && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style={{flexShrink:0}}><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>}
+                  {m.icon === 'link' && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style={{flexShrink:0}}><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>}
+                  {m.icon === 'trophy' && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style={{flexShrink:0}}><path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94.63 1.5 1.98 2.63 3.61 2.96V19H7v2h10v-2h-4v-3.1c1.63-.33 2.98-1.46 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/></svg>}
+                  {m.name}
+                </div>
                 <div className="model-select-desc">{m.desc}</div>
                 <div className="model-select-acc">
                   <div className="model-acc-dot" />
@@ -134,7 +139,10 @@ export default function ECGCalculator() {
                 ACTIVE MODEL
               </p>
               <p style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--blue)' }}>
-                {activeModel?.icon} {activeModel?.name}
+                {activeModel?.icon === 'bolt' && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>}
+              {activeModel?.icon === 'link' && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>}
+              {activeModel?.icon === 'trophy' && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94.63 1.5 1.98 2.63 3.61 2.96V19H7v2h10v-2h-4v-3.1c1.63-.33 2.98-1.46 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/></svg>}
+              {' '}{activeModel?.name}
               </p>
               <p style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 4 }}>
                 Accuracy: <strong style={{ color: 'var(--mint)' }}>{activeModel?.acc}</strong>
@@ -164,8 +172,7 @@ export default function ECGCalculator() {
 
             {/* Upload Card — dual .hea + .dat */}
             <div className="ecg-upload-card">
-              <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>
-                📁 Upload ECG Files
+              <h3 style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4, display:"flex", alignItems:"center", gap:8 }}><svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"/></svg> Upload ECG Files
               </h3>
               <p style={{ fontSize: '0.82rem', color: 'var(--text-muted)', marginBottom: 18 }}>
                 Upload the matching <strong>.hea</strong> header and <strong>.dat</strong> signal files (WFDB format).
@@ -189,7 +196,7 @@ export default function ECGCalculator() {
                     >
                       {file ? (
                         <>
-                          <div style={{ fontSize: '1.6rem', marginBottom: 6 }}>✅</div>
+                          <div style={{ marginBottom: 6, color:"var(--teal)" }}><svg viewBox="0 0 24 24" fill="currentColor" width="28" height="28"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg></div>
                           <p style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-primary)',
                             wordBreak: 'break-all', lineHeight: 1.4 }}>
                             {file.name}
@@ -200,9 +207,7 @@ export default function ECGCalculator() {
                         </>
                       ) : (
                         <>
-                          <div style={{ fontSize: '1.8rem', marginBottom: 8 }}>
-                            {zone === 'hea' ? '📋' : '📊'}
-                          </div>
+                          <div style={{ marginBottom: 8, color:'var(--blue)' }}>{zone === 'hea' ? <svg viewBox='0 0 24 24' fill='currentColor' width='28' height='28'><path d='M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z'/></svg> : <svg viewBox='0 0 24 24' fill='currentColor' width='28' height='28'><path d='M9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4zm2.5 2.1h-15V5h15v14.1zm0-16.1h-15C4.22 3 3 4.22 3 5.5v13C3 19.78 4.22 21 5.5 21h15c1.28 0 2.5-1.22 2.5-2.5v-13C23 4.22 21.78 3 20.5 3z'/></svg>}</div>
                           <p style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
                             {label}
                           </p>
@@ -230,12 +235,12 @@ export default function ECGCalculator() {
                     opacity: loading ? 0.7 : 1,
                     cursor: bothUploaded && !loading ? 'pointer' : 'not-allowed',
                   }}>
-                  {loading ? '🔄 Analyzing…' : '🔬 Analyze ECG'}
+                  {loading ? 'Analyzing…' : 'Analyze ECG'}
                 </button>
                 {(heaFile || datFile) && (
                   <button className="upload-browse-btn" onClick={clearFiles}
                     style={{ background: 'var(--soft-gray)', color: 'var(--text-secondary)' }}>
-                    ✕ Clear
+                    Clear
                   </button>
                 )}
               </div>
@@ -339,13 +344,13 @@ export default function ECGCalculator() {
             {/* Arrhythmia Prediction */}
             <div className="arrhythmia-card">
               <div className="arrhythmia-header">
-                <div className="arrhythmia-icon">💓</div>
+                <div className="arrhythmia-icon"><svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg></div>
                 <h3 className="arrhythmia-title">Arrhythmia Prediction</h3>
               </div>
 
               {!result && !loading && (
                 <div className="prediction-placeholder" style={{ padding: '28px 10px' }}>
-                  <div className="prediction-placeholder-icon">📊</div>
+                  <div className="prediction-placeholder-icon"><svg viewBox="0 0 24 24" fill="currentColor" width="36" height="36" style={{color:"var(--blue)"}}><path d="M9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4zm2.5 2.1h-15V5h15v14.1zm0-16.1h-15C4.22 3 3 4.22 3 5.5v13C3 19.78 4.22 21 5.5 21h15c1.28 0 2.5-1.22 2.5-2.5v-13C23 4.22 21.78 3 20.5 3z"/></svg></div>
                   <p className="prediction-placeholder-text">
                     Upload .hea + .dat files and click Analyze to see real predictions.
                   </p>
@@ -354,7 +359,7 @@ export default function ECGCalculator() {
 
               {loading && (
                 <div className="prediction-placeholder" style={{ padding: '28px 10px' }}>
-                  <div className="prediction-placeholder-icon">🔄</div>
+                  <div className="prediction-placeholder-icon"><svg viewBox="0 0 24 24" fill="currentColor" width="36" height="36" style={{color:"var(--blue)"}}><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg></div>
                   <p className="prediction-placeholder-text">
                     Running {activeModel?.name} on backend…
                   </p>
@@ -379,7 +384,7 @@ export default function ECGCalculator() {
                       <div key={p.cls} className="prob-bar-row">
                         <div className="prob-bar-meta">
                           <span className="prob-bar-name">
-                            {p.detected ? '✅ ' : ''}{p.label}
+                            {p.detected ? '✓ ' : ''}{p.label}
                             <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginLeft: 4 }}>
                               [{p.cls}]
                             </span>
@@ -411,7 +416,7 @@ export default function ECGCalculator() {
 
             {/* Model Analysis */}
             <div className="model-analysis-card">
-              <h4 className="model-analysis-title">📐 Model Analysis</h4>
+              <h4 className="model-analysis-title" style={{display:"flex",alignItems:"center",gap:8}}><svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M21 6.5l-4-4-9.5 9.5-2 4.5 4.5-2L21 6.5zm-13 8l-2-2 8-8 2 2-8 8z"/></svg> Model Analysis</h4>
               <div className="model-metric-grid">
                 <div className="model-metric-item">
                   <div className="model-metric-value">{activeModel?.acc}</div>
@@ -441,8 +446,7 @@ export default function ECGCalculator() {
             {/* Signal Metrics — real values from backend after analysis */}
             <div className="model-analysis-card"
               style={{ background: 'linear-gradient(135deg,rgba(30,136,229,0.04),rgba(38,166,154,0.04))' }}>
-              <h4 className="model-analysis-title">
-                📡 Signal Metrics
+              <h4 className="model-analysis-title" style={{display:"flex",alignItems:"center",gap:8}}><svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg> Signal Metrics
                 {result && <span style={{ fontWeight: 400, fontSize: '0.74rem', color: 'var(--mint)', marginLeft: 8 }}>
                   · from waveform
                 </span>}
