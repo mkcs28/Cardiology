@@ -1,26 +1,18 @@
 # ============================================================
 #  CardioAI — Flask REST API Backend
-#  Connects the React frontend to ECG inference models
-#
-#  Endpoints:
-#    GET  /api/health              — server + device status
-#    GET  /api/models/status       — which .pth files are loaded
-#    POST /api/models/load         — load a model into memory
-#    POST /api/ecg/analyze         — upload .hea + .dat, run inference
-#    GET  /api/results/history     — return saved CSV as JSON
-#    POST /api/cardio/predict      — cardiovascular risk from form data
+#  Models: TE_Transformer / GAT_Transformer / LAGTT (Proposed)
+#  Dataset: PTB-XL (100Hz, 12-lead ECG)
 #
 #  Run locally:
 #    pip install -r requirements.txt
 #    python api.py
 #
-#  Deploy to Render / Railway:
-#    Build command : pip install -r requirements.txt
-#    Start command : python api.py
-#    Env var       : MODELS_DIR=./models  (optional, default is ./models)
+#  Deploy to Render:
+#    Build : pip install -r requirements.txt
+#    Start : gunicorn api:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
 # ============================================================
 
-import os, io, shutil, tempfile, threading, logging
+import os, shutil, tempfile, threading, logging
 from datetime import datetime
 
 import numpy  as np
@@ -62,39 +54,103 @@ MODEL_METRICS = {
     "proposed": {"sensitivity": "98.2%", "specificity": "98.9%", "auc": "0.991"},
 }
 
-# ── App ───────────────────────────────────────────────────────
-app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+# ── Exact model architectures from cardioai_backend.py ───────
 
-_models = {}          # modelId → nn.Module
-_lock   = threading.Lock()
-
-# ── Model architecture placeholders ──────────────────────────
-# Replace with your actual model class definitions.
-
-class _BaseECGModel(nn.Module):
-    """Minimal stand-in — replace with real architecture."""
-    def __init__(self, n_classes=5):
+class TemporalEncoder(nn.Module):
+    def __init__(self, d=128):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(12 * 1000, 256), nn.ReLU(),
-            nn.Dropout(0.3),
-            nn.Linear(256, 128), nn.ReLU(),
-            nn.Linear(128, n_classes),
+            nn.Conv1d(12, 64,  3, padding=1, dilation=1), nn.ReLU(),
+            nn.Conv1d(64, 128, 3, padding=2, dilation=2), nn.ReLU(),
+            nn.Conv1d(128, d,  3, padding=4, dilation=4), nn.ReLU(),
         )
-    def forward(self, x):  # x: (B, 12, T)
-        return self.net(x.flatten(1))
+    def forward(self, x):
+        return self.net(x)
 
-TETransformer  = _BaseECGModel
-GATTransformer = _BaseECGModel
-ProposedModel  = _BaseECGModel
+class MultiHeadGAT(nn.Module):
+    def __init__(self, d, heads=4):
+        super().__init__()
+        self.W     = nn.Linear(d, d * heads)
+        self.heads = heads
+    def forward(self, Z):
+        B, L, d = Z.shape
+        Wh  = self.W(Z).view(B, L, self.heads, d)
+        out = []
+        for h in range(self.heads):
+            Wh_h = Wh[:, :, h, :]
+            A    = torch.softmax(Wh_h @ Wh_h.transpose(1, 2), dim=-1)
+            out.append(A @ Wh_h)
+        return torch.mean(torch.stack(out), dim=0)
+
+class TE_Transformer(nn.Module):
+    def __init__(self, d=128, nc=5):
+        super().__init__()
+        self.temp  = TemporalEncoder(d)
+        self.trans = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=d, nhead=4, batch_first=True),
+            num_layers=2,
+        )
+        self.fc = nn.Linear(d, nc)
+    def forward(self, x):
+        x = self.temp(x)
+        x = x.permute(0, 2, 1)
+        x = self.trans(x)
+        x = x.mean(1)
+        return torch.sigmoid(self.fc(x))
+
+class GAT_Transformer(nn.Module):
+    def __init__(self, d=128, nc=5):
+        super().__init__()
+        self.input_proj = nn.Conv1d(12, d, 1)
+        self.gat        = MultiHeadGAT(d)
+        self.trans      = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=d, nhead=4, batch_first=True),
+            num_layers=2,
+        )
+        self.fc = nn.Linear(d, nc)
+    def forward(self, x):
+        x = self.input_proj(x)
+        x = x.permute(0, 2, 1)
+        Z = x.mean(1).unsqueeze(1).repeat(1, 12, 1)
+        Z = self.gat(Z)
+        x = x + Z.mean(1, keepdim=True)
+        x = self.trans(x)
+        x = x.mean(1)
+        return torch.sigmoid(self.fc(x))
+
+class LAGTT(nn.Module):
+    def __init__(self, d=128, nc=5):
+        super().__init__()
+        self.temp  = TemporalEncoder(d)
+        self.gat   = MultiHeadGAT(d)
+        self.trans = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=d, nhead=4, batch_first=True),
+            num_layers=2,
+        )
+        self.fc = nn.Linear(d, nc)
+    def forward(self, x):
+        x = self.temp(x)
+        x = x.permute(0, 2, 1)
+        Z = x.mean(1).unsqueeze(1).repeat(1, 12, 1)
+        Z = self.gat(Z)
+        x = x + Z.mean(1, keepdim=True)
+        x = self.trans(x)
+        x = x.mean(1)
+        return torch.sigmoid(self.fc(x))
 
 MODEL_CLASSES = {
-    "te":       TETransformer,
-    "gat":      GATTransformer,
-    "proposed": ProposedModel,
+    "te":       TE_Transformer,
+    "gat":      GAT_Transformer,
+    "proposed": LAGTT,
 }
 
+# ── App ───────────────────────────────────────────────────────
+app    = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+_models = {}
+_lock   = threading.Lock()
+
+# ── Model loader ──────────────────────────────────────────────
 def _load_model(model_id: str):
     with _lock:
         if model_id in _models:
@@ -104,80 +160,50 @@ def _load_model(model_id: str):
         if not os.path.exists(path):
             raise FileNotFoundError(f"{fname} not found in {MODELS_DIR}")
         cls = MODEL_CLASSES[model_id]
-        m   = cls(n_classes=len(CLASSES))
-        state = torch.load(path, map_location=DEVICE)
-        if isinstance(state, dict) and "model_state_dict" in state:
-            state = state["model_state_dict"]
-        try:
-            m.load_state_dict(state, strict=False)
-        except Exception as e:
-            log.warning(f"load_state_dict warning for {model_id}: {e}")
+        m   = cls(nc=len(CLASSES))
+        state = torch.load(path, map_location=DEVICE, weights_only=True)
+        m.load_state_dict(state)
         m.to(DEVICE).eval()
         _models[model_id] = m
         log.info(f"Loaded {model_id} on {DEVICE}")
         return m
 
-# ── ECG preprocessing ─────────────────────────────────────────
-
-def _preprocess_ecg(hea_path: str, fs_target=500, length=1000):
-    record = wfdb.rdrecord(hea_path.replace(".hea", ""))
-    signal = record.p_signal  # (T, leads)
-    # Resample if necessary
-    if record.fs != fs_target:
-        from scipy.signal import resample
-        n_new = int(signal.shape[0] * fs_target / record.fs)
-        signal = resample(signal, n_new, axis=0)
-    # Trim / pad to fixed length
-    T = signal.shape[0]
-    if T >= length:
-        signal = signal[:length, :]
-    else:
-        signal = np.pad(signal, ((0, length - T), (0, 0)))
-    # Normalise per-lead
-    signal = (signal - signal.mean(0)) / (signal.std(0) + 1e-8)
-    # (12, length) — take first 12 leads, or pad if fewer
-    n_leads = min(signal.shape[1], 12)
-    out = np.zeros((12, length), dtype=np.float32)
-    out[:n_leads] = signal[:, :n_leads].T
-    return out, record
+# ── ECG preprocessing (matches cardioai_backend.py exactly) ──
+def _load_ecg(hea_path: str, dat_path: str):
+    tmp  = tempfile.mkdtemp()
+    try:
+        base = os.path.splitext(os.path.basename(hea_path))[0]
+        shutil.copy(hea_path, os.path.join(tmp, base + ".hea"))
+        shutil.copy(dat_path, os.path.join(tmp, base + ".dat"))
+        signal, fields = wfdb.rdsamp(os.path.join(tmp, base))  # (T, 12)
+        signal = signal.T                                        # (12, T)
+        signal = (signal - signal.mean()) / (signal.std() + 1e-8)
+        tensor = torch.tensor(signal, dtype=torch.float32).unsqueeze(0)  # (1, 12, T)
+        return tensor, base, signal, fields
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 def _waveform_to_polylines(signal: np.ndarray, n_leads=6, width=500, height=140):
-    """Convert raw signal to SVG polyline point strings per lead."""
     result = {}
     for i in range(min(n_leads, signal.shape[0])):
         lead = signal[i]
-        T    = len(lead)
-        xs   = np.linspace(0, width, T)
-        # Normalise 0-1 then map to height
+        xs   = np.linspace(0, width, len(lead))
         lo, hi = lead.min(), lead.max()
         rng = hi - lo if hi != lo else 1.0
-        ys = height - ((lead - lo) / rng) * (height * 0.8) - height * 0.1
+        ys  = height - ((lead - lo) / rng) * (height * 0.8) - height * 0.1
         pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
         result[f"lead{i}"] = pts
     return result
 
-def _compute_signal_metrics(record, signal: np.ndarray):
-    hr = round(60.0 / (signal.shape[1] / record.fs)) if record.fs else 0
+def _signal_metrics(fields):
+    fs = fields.get("fs", 100)
+    hr = round(60.0 * fs / fields.get("sig_len", fs))
     return {
         "heartRate":   f"{hr} bpm",
         "prInterval":  "0.16s",
         "qrsDuration": "0.09s",
         "qtInterval":  "0.42s",
     }
-
-def _save_result(record_name, model_id, detected, probs):
-    row = {
-        "timestamp":   datetime.now().isoformat(),
-        "record":      record_name,
-        "model":       model_id,
-        "detected":    "|".join(detected) if detected else "NONE",
-        **{c: round(p, 4) for c, p in zip(CLASSES, probs)},
-    }
-    df = pd.DataFrame([row])
-    if os.path.exists(CSV_PATH):
-        df.to_csv(CSV_PATH, mode="a", header=False, index=False)
-    else:
-        df.to_csv(CSV_PATH, index=False)
 
 # ── Routes ────────────────────────────────────────────────────
 
@@ -187,6 +213,7 @@ def health():
         "success":      True,
         "device":       DEVICE.upper(),
         "modelsLoaded": list(_models.keys()),
+        "modelsDir":    MODELS_DIR,
         "timestamp":    datetime.now().isoformat(),
     })
 
@@ -224,38 +251,40 @@ def ecg_analyze():
     threshold = float(request.form.get("threshold", DEFAULT_THRESHOLD))
 
     if not hea_file or not dat_file:
-        return jsonify({"success": False, "error": "Both heaFile and datFile required"}), 400
+        return jsonify({"success": False, "error": "Both heaFile and datFile are required"}), 400
     if model_id not in MODEL_REGISTRY:
         return jsonify({"success": False, "error": f"Unknown model '{model_id}'"}), 400
 
-    tmpdir = tempfile.mkdtemp()
+    hea_tmp = tempfile.NamedTemporaryFile(suffix=".hea", delete=False)
+    dat_tmp = tempfile.NamedTemporaryFile(suffix=".dat", delete=False)
     try:
-        hea_path = os.path.join(tmpdir, hea_file.filename)
-        dat_path = os.path.join(tmpdir, dat_file.filename)
-        hea_file.save(hea_path)
-        dat_file.save(dat_path)
+        hea_file.save(hea_tmp.name)
+        dat_file.save(dat_tmp.name)
 
-        signal, record = _preprocess_ecg(hea_path)
-        model = _load_model(model_id)
+        tensor, record_name, signal, fields = _load_ecg(hea_tmp.name, dat_tmp.name)
+        model  = _load_model(model_id)
 
-        x   = torch.tensor(signal).unsqueeze(0).to(DEVICE)     # (1,12,1000)
         with torch.no_grad():
-            logits = model(x)                                   # (1, 5)
-            probs  = torch.sigmoid(logits).squeeze(0).cpu().numpy()
+            probs = model(tensor.to(DEVICE)).cpu().numpy()[0]  # (5,)
 
         pcts      = (probs * 100).tolist()
         detected  = [CLASSES[i] for i, p in enumerate(probs) if p > threshold]
         all_preds = sorted(
-            [{"cls": c, "label": CLASS_LABELS[c], "pct": round(pcts[i], 1),
-              "detected": probs[i] > threshold}
+            [{"cls": c, "label": CLASS_LABELS[c],
+              "pct": round(pcts[i], 1), "detected": probs[i] > threshold}
              for i, c in enumerate(CLASSES)],
             key=lambda x: -x["pct"],
         )
 
-        waveform_data  = _waveform_to_polylines(signal)
-        signal_metrics = _compute_signal_metrics(record, signal)
-        record_name    = hea_file.filename.replace(".hea", "")
-        _save_result(record_name, model_id, [CLASS_LABELS[d] for d in detected], probs)
+        # Save to CSV
+        row = {"timestamp": datetime.now().isoformat(), "record": record_name,
+               "model": model_id, "detected": "|".join(detected) or "NONE",
+               **{c: round(float(p), 4) for c, p in zip(CLASSES, probs)}}
+        df = pd.DataFrame([row])
+        if os.path.exists(CSV_PATH):
+            df.to_csv(CSV_PATH, mode="a", header=False, index=False)
+        else:
+            df.to_csv(CSV_PATH, index=False)
 
         return jsonify({
             "success":       True,
@@ -265,8 +294,8 @@ def ecg_analyze():
             "device":        DEVICE.upper(),
             "predictions":   all_preds,
             "detected":      [{"cls": d, "label": CLASS_LABELS[d]} for d in detected],
-            "waveformData":  waveform_data,
-            "signalMetrics": signal_metrics,
+            "waveformData":  _waveform_to_polylines(signal),
+            "signalMetrics": _signal_metrics(fields),
             "metrics":       MODEL_METRICS.get(model_id, {}),
             "timestamp":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
@@ -277,39 +306,35 @@ def ecg_analyze():
         log.exception("ECG analysis failed")
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        os.unlink(hea_tmp.name)
+        os.unlink(dat_tmp.name)
 
 @app.route("/api/results/history")
 def results_history():
     model_id = request.args.get("modelId")
     record   = request.args.get("record")
     limit    = int(request.args.get("limit", 50))
-
     if not os.path.exists(CSV_PATH):
         return jsonify({"success": True, "results": []})
-
     df = pd.read_csv(CSV_PATH)
     if model_id: df = df[df["model"] == model_id]
     if record:   df = df[df["record"] == record]
-    df = df.tail(limit)
-
-    return jsonify({"success": True, "results": df.to_dict(orient="records")})
+    return jsonify({"success": True, "results": df.tail(limit).to_dict(orient="records")})
 
 @app.route("/api/cardio/predict", methods=["POST"])
 def cardio_predict():
     f = request.get_json(force=True)
     if not f:
         return jsonify({"success": False, "error": "No data provided"}), 400
-
     try:
-        age   = float(f.get("age",   45))
-        bmi   = float(f.get("bmi",   25))
-        sys_  = float(f.get("systolic",  120))
-        dias  = float(f.get("diastolic",  80))
-        chol  = float(f.get("cholesterol", 200))
-        gluc  = float(f.get("glucose",     90))
-        hdl   = float(f.get("hdl",         55))
-        ldl   = float(f.get("ldl",        120))
+        age  = float(f.get("age",   45))
+        bmi  = float(f.get("bmi",   25))
+        sys_ = float(f.get("systolic",  120))
+        dias = float(f.get("diastolic",  80))
+        chol = float(f.get("cholesterol", 200))
+        gluc = float(f.get("glucose",     90))
+        hdl  = float(f.get("hdl",         55))
+        ldl  = float(f.get("ldl",        120))
         smoke = f.get("smoking",         "no")
         act   = f.get("physicalActivity", "moderate")
         fam   = f.get("familyHistory",   "no")
@@ -346,34 +371,32 @@ def cardio_predict():
         elif act == "high": score -= 5
         if sex == "male" and age > 45: score += 5
 
-        score = int(min(max(round(score), 3), 97))
+        score      = int(min(max(round(score), 3), 97))
         confidence = min(98, round(88 + abs(hash(str(f))) % 10))
         category   = "low" if score < 25 else "moderate" if score < 55 else "high"
 
         recs = {
             "low": [
-                "Maintain your current healthy lifestyle — excellent cardiovascular health.",
-                "150+ min/week of moderate aerobic exercise is recommended.",
+                "Maintain your current healthy lifestyle.",
+                "150+ min/week of moderate aerobic exercise recommended.",
                 "Follow a heart-healthy Mediterranean diet.",
-                "Annual cardiovascular screening is sufficient at this risk level.",
+                "Annual cardiovascular screening is sufficient.",
                 "Monitor blood pressure at home monthly.",
             ],
             "moderate": [
-                "Schedule a cardiology consultation within the next 3 months.",
+                "Schedule a cardiology consultation within 3 months.",
                 "Reduce sodium intake to below 2,300 mg/day.",
-                "Increase aerobic exercise to 5 sessions/week (30 min each).",
-                "Consider statin therapy if LDL remains persistently elevated.",
+                "Increase aerobic exercise to 5 sessions/week.",
+                "Consider statin therapy if LDL remains elevated.",
                 "Check blood glucose levels every 2 weeks.",
-                "Eliminate saturated fats and trans fats from diet.",
             ],
             "high": [
-                "Immediate cardiology consultation is strongly advised.",
-                "Comprehensive cardiac workup required: ECG, echocardiogram, stress test.",
-                "Medication review and optimisation is critical — consult your physician.",
-                "Daily blood pressure and blood glucose monitoring is essential.",
-                "Cardiac rehabilitation programme is strongly recommended.",
-                "Create an emergency cardiac action plan with your healthcare provider.",
-                "Strict abstinence from smoking and alcohol is required.",
+                "Immediate cardiology consultation strongly advised.",
+                "Comprehensive cardiac workup required urgently.",
+                "Medication review and optimisation is critical.",
+                "Daily blood pressure and glucose monitoring essential.",
+                "Cardiac rehabilitation programme strongly recommended.",
+                "Create an emergency action plan with your doctor.",
             ],
         }[category]
 
@@ -385,13 +408,10 @@ def cardio_predict():
             "recommendations": recs,
             "timestamp":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
-
     except Exception as e:
         log.exception("Cardio prediction failed")
         return jsonify({"success": False, "error": str(e)}), 500
 
-
 if __name__ == "__main__":
-    log.info(f"CardioAI API starting on port {PORT} · device={DEVICE}")
-    log.info(f"Models dir: {MODELS_DIR}")
+    log.info(f"CardioAI API · port={PORT} · device={DEVICE} · models={MODELS_DIR}")
     app.run(host="0.0.0.0", port=PORT, debug=False)
