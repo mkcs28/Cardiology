@@ -1,6 +1,11 @@
+# CardioAI Backend Dependencies
+# Install: pip install -r requirements.txt
+
 flask>=3.0
 flask-cors>=4.0
 torch>=2.1
 wfdb>=4.1
 pandas>=2.1
 numpy>=1.26
+scipy>=1.11
+gunicorn>=21.0

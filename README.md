@@ -1,183 +1,131 @@
-# CardioAI — Full Stack Setup Guide
+# CardioAI — AI-Based Cardiovascular & ECG Risk Prediction Platform
 
-## Project Layout
+A full-stack healthcare AI platform with a React + Vite frontend and a Python Flask backend serving real PyTorch ECG models.
+
+---
+
+## Live Demo (Frontend Only — Demo Mode)
+
+Deploy the frontend to **Vercel** in one click:
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/mkcs28/Cardiology)
+
+In **Demo Mode** (no backend), the app runs fully in the browser using a deterministic mock engine — all predictions are simulated locally, no server needed.
+
+---
+
+## Architecture
 
 ```
-cardioai/
- ├── api.py                   ← Flask REST API  (backend)
- ├── cardioai_backend.py      ← Original CLI tool  (standalone)
- ├── requirements.txt         ← Python dependencies
- ├── models/                  ← Put your .pth files here
- │    ├── TE_Transformer.pth
- │    ├── GAT_Transformer.pth
- │    └── Proposed.pth
- └── healthcare-ai/           ← React + Vite frontend
-      ├── src/
-      │    ├── api/
-      │    │    ├── client.js   ← fetch wrappers for all endpoints
-      │    │    └── useApi.js   ← loading/error hook
-      │    ├── components/
-      │    │    ├── Navbar.jsx
-      │    │    └── ApiStatusBanner.jsx   ← live backend status
-      │    └── pages/
-      │         ├── CardioCalculator.jsx  ← POST /api/cardio/predict
-      │         └── ECGCalculator.jsx    ← POST /api/ecg/analyze
-      └── vite.config.js  ← proxies /api → localhost:5000
+Browser (React + Vite)
+    │
+    │  /api/*  →  Flask :5000  (dev proxy)
+    │          →  VITE_API_BASE  (production)
+    │
+    └── Smart client.js
+            ├── Tries real backend first
+            └── Falls back to mock engine if offline
 ```
 
 ---
 
-## 1 — Install Python dependencies
+## Quickstart — Local Development
+
+### 1. Frontend
+
+```bash
+npm install
+npm run dev
+# → http://localhost:5173  (Demo Mode, no backend needed)
+```
+
+### 2. Backend (for real model inference)
 
 ```bash
 pip install -r requirements.txt
-```
-
----
-
-## 2 — Place trained model files
-
-Copy your three `.pth` files into a `models/` folder next to `api.py`:
-
-```
-models/
- ├── TE_Transformer.pth
- ├── GAT_Transformer.pth
- └── Proposed.pth
-```
-
-Custom folder? Set the environment variable before starting the server:
-
-```bash
-export MODELS_DIR=/absolute/path/to/your/models
-```
-
----
-
-## 3 — Start the Flask API
-
-```bash
 python api.py
+# → http://localhost:5000
 ```
 
-The API starts on **http://localhost:5000**. You will see:
-
-```
-🫀  CardioAI Flask API
-Device     : CPU  (or CUDA)
-Models dir : ./models
-...
-```
+Place your `.pth` files in `./models/`:
+- `TE_Transformer.pth`
+- `GAT_Transformer.pth`
+- `Proposed.pth`
 
 ---
 
-## 4 — Start the React frontend
+## Deployment
 
-```bash
-cd healthcare-ai
-npm install        # first time only
-npm run dev
-```
+### Option A — Frontend only (Vercel or Netlify) · Free
 
-Opens at **http://localhost:5173**  
-Vite automatically proxies all `/api/*` requests → `http://localhost:5000`.
+The easiest path. The app works in Demo Mode with no backend.
+
+**Vercel:**
+1. Push repo to GitHub
+2. Import repo at vercel.com → framework: **Vite** → Deploy
+3. Done. Routes are handled by `vercel.json`.
+
+**Netlify:**
+1. Push repo to GitHub
+2. Import at netlify.com → build command: `npm run build` → publish: `dist`
+3. Done. Routes are handled by `public/_redirects`.
+
+### Option B — Full stack (Frontend + Backend) · Recommended for real predictions
+
+**Step 1 — Deploy backend to Render:**
+1. Go to render.com → New Web Service → connect your GitHub repo
+2. Build command: `pip install -r requirements.txt`
+3. Start command: `gunicorn api:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120`
+4. Add env var: `MODELS_DIR=./models`
+5. Note your live URL, e.g. `https://cardioai-api.onrender.com`
+
+**Step 2 — Deploy frontend to Vercel:**
+1. Import repo at vercel.com
+2. Add environment variable:
+   ```
+   VITE_API_BASE = https://cardioai-api.onrender.com/api
+   ```
+3. Deploy
+
+**Step 3 — Done.** The frontend will now call your live Flask backend for real AI predictions.
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `VITE_API_BASE` | No | Full URL to Flask backend. If unset, app uses Demo Mode. |
+| `MODELS_DIR` | No | Path to `.pth` files (default: `./models`) |
+| `PORT` | No | Backend port (Render sets this automatically) |
 
 ---
 
 ## API Endpoints
 
-| Method | Path                  | Description                                      |
-|--------|-----------------------|--------------------------------------------------|
-| GET    | `/api/health`         | Server status, device, loaded models             |
-| GET    | `/api/models/status`  | Which `.pth` files exist / are loaded            |
-| POST   | `/api/models/load`    | Pre-load a model into memory (JSON: `modelId`)   |
-| POST   | `/api/ecg/analyze`    | Upload `.hea` + `.dat`, run inference            |
-| GET    | `/api/results/history`| Saved predictions CSV as JSON                    |
-| POST   | `/api/cardio/predict` | Cardiovascular risk from patient form JSON       |
-
-### POST /api/ecg/analyze — multipart form
-
-| Field       | Type   | Description                              |
-|-------------|--------|------------------------------------------|
-| `heaFile`   | File   | WFDB `.hea` header file                  |
-| `datFile`   | File   | WFDB `.dat` signal file                  |
-| `modelId`   | string | `"te"` \| `"gat"` \| `"proposed"`       |
-| `threshold` | float  | Detection threshold, default `0.5`       |
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "record": "00001_lr",
-  "model": { "id": "proposed", "name": "Proposed Model", "accuracy": "98.7%" },
-  "predictions": [
-    { "cls": "NORM", "label": "Normal Sinus Rhythm", "confidence": 0.921, "pct": 92.1, "detected": true },
-    ...
-  ],
-  "detected": [...],
-  "signalMetrics": { "heartRate": "72 BPM", "prInterval": "158 ms", ... },
-  "waveformData": { "lead0": "0,70 1.5,68 3,30 ...", ... },
-  "metrics": { "sensitivity": "98.2%", "specificity": "98.9%", "auc": "0.991" }
-}
-```
-
-### POST /api/cardio/predict — JSON body
-
-```json
-{
-  "age": 55, "gender": "male", "bmi": 28.5,
-  "systolic": 135, "diastolic": 85, "cholesterol": 215,
-  "glucose": 105, "smoking": "former", "hdl": 48, "ldl": 140,
-  "physicalActivity": "low", "familyHistory": "yes"
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "riskPercent": 54,
-  "riskCategory": "moderate",
-  "confidence": 88,
-  "recommendations": ["Consult a physician...", ...],
-  "timestamp": "2024-11-15 14:32:10"
-}
-```
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/api/health` | Server status + device info |
+| `GET` | `/api/models/status` | Which models are loaded |
+| `POST` | `/api/models/load` | Load a model into memory |
+| `POST` | `/api/ecg/analyze` | Upload `.hea` + `.dat`, get prediction |
+| `GET` | `/api/results/history` | Past predictions from CSV |
+| `POST` | `/api/cardio/predict` | Cardiovascular risk from form data |
 
 ---
 
-## How the connection works
+## Tech Stack
 
-```
-Browser (React)
-  │
-  │  POST /api/ecg/analyze   (multipart: heaFile, datFile, modelId)
-  │
-  ▼
-Vite dev server   →   proxy   →   Flask :5000
-                                     │
-                            load .hea + .dat via wfdb
-                            normalise signal (12, T)
-                            run model.forward(tensor)
-                            compute signal metrics
-                            build SVG waveform points
-                            append to CSV
-                                     │
-                                  JSON response
-                                     │
-  React ECGCalculator.jsx ◄──────────┘
-   • renders real waveform polylines per lead
-   • shows all 5 class probability bars
-   • displays real signal metrics (HR, PR, QRS, QT)
-```
+| Layer | Technology |
+|---|---|
+| Frontend | React 19, Vite, React Router, Pure CSS |
+| Backend | Python, Flask, Flask-CORS |
+| AI Models | PyTorch, TE Transformer, GAT Transformer |
+| ECG I/O | WFDB (MIT-BIH / PhysioNet format) |
+| Deployment | Vercel (frontend), Render (backend) |
 
 ---
 
-## Notes
+## Disclaimer
 
-- Models are **cached in memory** after first load — subsequent requests are fast.
-- Results are **appended** to `models/recognition_results.csv` after each analysis.
-- The frontend shows a live **backend status banner** at the top of each calculator page.
-- If the backend is offline the frontend still renders with a demo ECG waveform.
+For research and educational purposes only. Not a substitute for professional medical advice.
