@@ -25,8 +25,8 @@ function PolylineWave({ points, stroke, opacity = 1, offset = 0 }) {
     strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" opacity={opacity} />;
 }
 
-// ── PDF ECG Analysis via Claude Vision API ───────────────────
-async function extractECGFromPDF(pdfFile, threshold) {
+// ── Step 1: Claude Vision digitizes ECG waveforms into numeric signal arrays ──
+async function extractSignalsFromPDF(pdfFile) {
   const base64Data = await new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result.split(',')[1]);
@@ -39,7 +39,7 @@ async function extractECGFromPDF(pdfFile, threshold) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       model: 'claude-sonnet-4-20250514',
-      max_tokens: 1000,
+      max_tokens: 4096,
       messages: [{
         role: 'user',
         content: [
@@ -49,87 +49,88 @@ async function extractECGFromPDF(pdfFile, threshold) {
           },
           {
             type: 'text',
-            text: `You are a clinical ECG analysis AI. Analyze this ECG PDF and extract all waveform data and clinical measurements you can observe.
+            text: `You are a clinical ECG digitization AI. Carefully examine this ECG PDF and digitize the waveforms into numeric amplitude samples so they can be fed into a deep learning model.
 
-Respond ONLY with a valid JSON object (no markdown, no backticks):
+For each visible lead, trace the waveform and produce an array of exactly 1000 evenly-spaced amplitude values in millivolts (mV).
+Baseline (isoelectric line) = 0.0 mV. Upward deflections are positive, downward are negative. Typical range: -2.0 to +2.0 mV.
+
+Also extract the visible clinical measurements.
+
+Respond ONLY with a valid JSON object — no markdown, no backticks, no explanation:
 {
+  "fs": 100,
   "heartRate": "<number> bpm",
   "prInterval": "<decimal>s",
   "qrsDuration": "<decimal>s",
   "qtInterval": "<decimal>s",
+  "summary": "<2-3 sentence clinical summary>",
   "findings": ["<finding1>", "<finding2>"],
-  "conditions": {
-    "NORM": <0-100>,
-    "CD": <0-100>,
-    "HYP": <0-100>,
-    "MI": <0-100>,
-    "STTC": <0-100>
-  },
-  "waveformPoints": {
-    "lead0": "<50 SVG polyline x,y points, x:0-500, y:5-135 baseline~70>",
-    "lead1": "...",
-    "lead2": "...",
-    "lead3": "...",
-    "lead4": "...",
-    "lead5": "..."
-  },
-  "summary": "<2-3 sentence clinical summary>"
+  "leads": {
+    "lead0":  [<1000 float mV values — Lead I>],
+    "lead1":  [<1000 float mV values — Lead II>],
+    "lead2":  [<1000 float mV values — Lead III>],
+    "lead3":  [<1000 float mV values — aVR>],
+    "lead4":  [<1000 float mV values — aVL>],
+    "lead5":  [<1000 float mV values — aVF>],
+    "lead6":  [<1000 float mV values — V1>],
+    "lead7":  [<1000 float mV values — V2>],
+    "lead8":  [<1000 float mV values — V3>],
+    "lead9":  [<1000 float mV values — V4>],
+    "lead10": [<1000 float mV values — V5>],
+    "lead11": [<1000 float mV values — V6>]
+  }
 }
 
-Conditions must sum to 100. Base waveform points on the actual ECG morphology you observe.`,
+Provide all 12 leads. If a lead is not visible in the PDF, synthesize it from nearby leads with similar morphology.`,
           },
         ],
       }],
     }),
   });
 
-  if (!response.ok) throw new Error(`Claude API error ${response.status}`);
-
+  if (!response.ok) throw new Error(`Claude Vision API error ${response.status}`);
   const data = await response.json();
   const text = data.content.map(b => b.text || '').join('');
   const clean = text.replace(/```json|```/g, '').trim();
-  const parsed = JSON.parse(clean);
+  return JSON.parse(clean);
+}
 
-  const ECG_CLASSES = [
-    { cls: 'NORM', label: 'Normal Sinus Rhythm' },
-    { cls: 'CD',   label: 'Conduction Disturbance' },
-    { cls: 'HYP',  label: 'Hypertrophy' },
-    { cls: 'MI',   label: 'Myocardial Infarction' },
-    { cls: 'STTC', label: 'ST/T-wave Change' },
-  ];
+// ── Step 2: Send numeric signals to backend → backend writes .hea + .dat → runs model ──
+async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
+  // Step 1 — Vision extracts numeric signal arrays from the PDF
+  const extracted = await extractSignalsFromPDF(pdfFile);
 
-  const conditions = parsed.conditions ?? { NORM: 80, CD: 5, HYP: 5, MI: 5, STTC: 5 };
-  const total = Object.values(conditions).reduce((a, b) => a + b, 0) || 100;
+  // Step 2 — POST signal arrays to backend; backend writes WFDB files and runs selected model
+  const record = pdfFile.name.replace(/\.pdf$/i, '');
+  const response = await fetch(`${apiBase}/ecg/analyze-from-signal`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      modelId,
+      threshold,
+      record,
+      leads: extracted.leads,
+      fs:    extracted.fs ?? 100,
+    }),
+  });
 
-  const predictions = ECG_CLASSES.map(c => ({
-    cls:      c.cls,
-    label:    c.label,
-    pct:      parseFloat(((conditions[c.cls] ?? 0) / total * 100).toFixed(1)),
-    detected: ((conditions[c.cls] ?? 0) / total) > threshold,
-  })).sort((a, b) => b.pct - a.pct);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.error || `Backend error ${response.status}`);
+  }
 
+  const result = await response.json();
+  if (!result.success) throw new Error(result.error || 'Analysis failed');
+
+  // Attach Vision-extracted clinical text to the model result
   return {
-    success: true,
-    record: pdfFile.name.replace(/\.pdf$/i, ''),
-    modelId: 'claude-vision',
-    threshold,
-    device: 'Claude Vision AI',
-    predictions,
-    detected: predictions.filter(p => p.detected),
-    waveformData: parsed.waveformPoints ?? {},
-    signalMetrics: {
-      heartRate:   parsed.heartRate   ?? '—',
-      prInterval:  parsed.prInterval  ?? '—',
-      qrsDuration: parsed.qrsDuration ?? '—',
-      qtInterval:  parsed.qtInterval  ?? '—',
-    },
-    metrics: { sensitivity: '—', specificity: '—', auc: '—' },
-    pdfSummary:  parsed.summary   ?? '',
-    pdfFindings: parsed.findings  ?? [],
-    timestamp: new Date().toLocaleString(),
+    ...result,
+    pdfSummary:  extracted.summary  ?? '',
+    pdfFindings: extracted.findings ?? [],
     _fromPDF: true,
   };
 }
+
 
 export default function ECGCalculator() {
   const [selectedModel, setSelectedModel] = useState('proposed');
@@ -183,7 +184,8 @@ export default function ECGCalculator() {
     if (!pdfFile) return;
     setPdfLoading(true); setPdfError(null); setPdfResult(null);
     try {
-      const res = await extractECGFromPDF(pdfFile, threshold);
+      const apiBase = (import.meta.env.VITE_API_BASE ?? '/api');
+      const res = await analyzeECGFromPDF(pdfFile, selectedModel, threshold, apiBase);
       setPdfResult(res);
     } catch (err) {
       setPdfError(err.message || 'PDF analysis failed');
@@ -445,7 +447,7 @@ export default function ECGCalculator() {
                     {pdfLoading ? (
                       <>
                         <svg viewBox="0 0 24 24" fill="currentColor" width="15" height="15" style={{animation:'spin 1s linear infinite'}}><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-                        Reading ECG from PDF…
+                        Extracting signals → running model…
                       </>
                     ) : (
                       <>
@@ -573,7 +575,7 @@ export default function ECGCalculator() {
                 <div className="prediction-placeholder" style={{ padding:'28px 10px' }}>
                   <div className="prediction-placeholder-icon"><svg viewBox="0 0 24 24" fill="currentColor" width="36" height="36" style={{color:'var(--blue)'}}><path d="M9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4zm2.5 2.1h-15V5h15v14.1zm0-16.1h-15C4.22 3 3 4.22 3 5.5v13C3 19.78 4.22 21 5.5 21h15c1.28 0 2.5-1.22 2.5-2.5v-13C23 4.22 21.78 3 20.5 3z"/></svg></div>
                   <p className="prediction-placeholder-text">
-                    {inputMode === 'pdf' ? 'Upload an ECG PDF and click "Analyze with Claude AI" to see predictions.' : 'Upload .hea + .dat files and click Analyze to see real predictions.'}
+                    {inputMode === 'pdf' ? 'Upload an ECG PDF and click "Analyze" — Claude Vision will digitize the signals and your selected model will classify them.' : 'Upload .hea + .dat files and click Analyze to see real predictions.'}
                   </p>
                 </div>
               )}
@@ -582,7 +584,7 @@ export default function ECGCalculator() {
                 <div className="prediction-placeholder" style={{ padding:'28px 10px' }}>
                   <div className="prediction-placeholder-icon"><svg viewBox="0 0 24 24" fill="currentColor" width="36" height="36" style={{color:'var(--blue)'}}><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg></div>
                   <p className="prediction-placeholder-text">
-                    {inputMode === 'pdf' ? 'Claude AI is reading your ECG PDF…' : `Running ${activeModel?.name} on backend…`}
+                    {inputMode === 'pdf' ? `Step 1: Vision digitizing ECG → Step 2: ${activeModel?.name} classifying…` : `Running ${activeModel?.name} on backend…`}
                   </p>
                 </div>
               )}
