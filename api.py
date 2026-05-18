@@ -12,9 +12,11 @@
 #    Start : gunicorn api:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
 # ============================================================
 
-import os, shutil, tempfile, threading, logging, base64, json
+import os, shutil, tempfile, threading, logging, json, sys
 from datetime import datetime
-import urllib.request, urllib.error
+# add ecg_extractor from same dir
+sys.path.insert(0, os.path.dirname(__file__))
+from ecg_extractor import extract_ecg_from_pdf
 
 import numpy  as np
 import pandas as pd
@@ -443,79 +445,48 @@ def ecg_analyze_from_signal():
 @app.route("/api/ecg/extract-pdf", methods=["POST"])
 def ecg_extract_pdf():
     """
-    Proxy endpoint: receives a PDF file, forwards it to the Anthropic API
-    (server-side, so no CORS issue), and returns the digitized ECG signal
-    arrays extracted by Claude Vision.
+    Pure image-processing ECG extractor.
+    Pipeline: PDF → rasterise pages (PyMuPDF) → detect ECG grid →
+              isolate trace pixels → column-median Y → mV calibration →
+              resample to 500 Hz.  No AI / Claude API used.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return jsonify({"success": False, "error": "ANTHROPIC_API_KEY not set on server"}), 500
-
     pdf_file = request.files.get("pdfFile")
     if not pdf_file:
         return jsonify({"success": False, "error": "No pdfFile uploaded"}), 400
 
-    pdf_bytes  = pdf_file.read()
-    b64_data   = base64.b64encode(pdf_bytes).decode("utf-8")
-
-    prompt = (
-        "You are a clinical ECG digitization AI. Carefully examine this ECG PDF and digitize "
-        "the waveforms into numeric amplitude samples so they can be fed into a deep learning arrhythmia classifier.\n\n"
-        "IMPORTANT — identify the ECG format first:\n"
-        "- If this is a single-lead recording (e.g. Kardia, AliveCor, Apple Watch), digitize the visible lead(s) "
-        "and synthesize the remaining leads from the morphology.\n"
-        "- If this is a standard 12-lead ECG, digitize all 12 leads.\n\n"
-        "For each lead, produce exactly 1000 evenly-spaced amplitude values in millivolts (mV). "
-        "Baseline = 0.0 mV. Upward deflections positive, downward negative. Typical range: -2.0 to +2.0 mV. "
-        "Trace QRS complexes, P waves, T waves and baseline carefully. Scale: 10mm = 1mV, 25mm/s unless noted.\n\n"
-        "Respond ONLY with a valid JSON object — no markdown, no backticks, no explanation:\n"
-        '{"fs":100,"leadCount":<1,2,6,or 12>,"heartRate":"<n> bpm","prInterval":"<d>s",'
-        '"qrsDuration":"<d>s","qtInterval":"<d>s","summary":"<2-3 sentence clinical summary>",'
-        '"findings":["<f1>","<f2>"],'
-        '"leads":{"lead0":[<1000 floats Lead I>],"lead1":[<1000 floats Lead II>],'
-        '"lead2":[<1000 floats Lead III>],"lead3":[<1000 floats aVR>],'
-        '"lead4":[<1000 floats aVL>],"lead5":[<1000 floats aVF>],'
-        '"lead6":[<1000 floats V1>],"lead7":[<1000 floats V2>],'
-        '"lead8":[<1000 floats V3>],"lead9":[<1000 floats V4>],'
-        '"lead10":[<1000 floats V5>],"lead11":[<1000 floats V6>]}}'
-    )
-
-    payload = json.dumps({
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": 4096,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64_data}},
-                {"type": "text", "text": prompt},
-            ],
-        }],
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages",
-        data=payload,
-        headers={
-            "Content-Type":      "application/json",
-            "x-api-key":         api_key,
-            "anthropic-version": "2023-06-01",
-        },
-        method="POST",
-    )
-
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-        text  = "".join(b.get("text", "") for b in body.get("content", []))
-        clean = text.replace("```json", "").replace("```", "").strip()
-        extracted = json.loads(clean)
-        return jsonify({"success": True, "data": extracted})
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")
-        log.error("Anthropic API error %s: %s", e.code, err_body)
-        return jsonify({"success": False, "error": f"Anthropic API error {e.code}: {err_body}"}), 502
+        pdf_bytes = pdf_file.read()
+        leads, metrics = extract_ecg_from_pdf(pdf_bytes)
+
+        if not leads:
+            return jsonify({"success": False, "error": "No ECG waveforms detected in PDF"}), 422
+
+        # Package into the same format the frontend & analyze-from-signal expect
+        leads_dict = {}
+        for i, lead in enumerate(leads):
+            # Resample to exactly 1000 points for frontend compatibility
+            sig = np.array(lead["signal"], dtype=np.float32)
+            if len(sig) != 1000:
+                from scipy.signal import resample
+                sig = resample(sig, 1000).astype(np.float32)
+            leads_dict[f"lead{i}"] = sig.tolist()
+
+        data = {
+            "fs":          leads[0]["fs"] if leads else 500,
+            "leadCount":   len(leads),
+            "heartRate":   metrics.get("heartRate", "—"),
+            "prInterval":  metrics.get("prInterval", "—"),
+            "qrsDuration": metrics.get("qrsDuration", "—"),
+            "qtInterval":  metrics.get("qtInterval", "—"),
+            "summary":     f"Image-processing extraction: {len(leads)} lead(s) detected.",
+            "findings":    [f"{l['name']}: range {min(l['signal']):.2f}–{max(l['signal']):.2f} mV"
+                            for l in leads[:4]],
+            "leads":       leads_dict,
+        }
+        return jsonify({"success": True, "data": data})
+
     except Exception as e:
-        log.exception("PDF extraction failed")
+        log.exception("Image-processing PDF extraction failed")
         return jsonify({"success": False, "error": str(e)}), 500
 
 
