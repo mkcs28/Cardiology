@@ -26,31 +26,107 @@ function PolylineWave({ points, stroke, opacity = 1, offset = 0 }) {
 }
 
 // ── Step 1: Image-processing ECG signal extraction ──────────────────────────────
-// ── Step 1: Image-processing ECG extractor ────────────────────────────────
 // PDF → rasterize → detect grid → isolate trace pixels → mV values
-// No Claude / AI API used. Backend runs ecg_extractor.py (PyMuPDF + OpenCV).
+// Primary: Flask backend (ecg_extractor.py / OpenCV).
+// Fallback: Claude Vision API called directly from the browser.
 async function extractSignalsFromPDF(pdfFile, apiBase) {
-  const form = new FormData();
-  form.append('pdfFile', pdfFile);
-
-  let res;
+  // ── Try Flask backend first ──────────────────────────────────────────────
   try {
-    res = await fetch(`${apiBase}/ecg/extract-pdf`, { method: 'POST', body: form });
-  } catch (err) {
-    throw new Error(
-      'Cannot reach the Flask backend. Start it with: python api.py\n' +
-      'The backend converts your PDF to an image and extracts waveforms using OpenCV — no API key needed.'
-    );
+    const form = new FormData();
+    form.append('pdfFile', pdfFile);
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), 5000);
+    const res  = await fetch(`${apiBase}/ecg/extract-pdf`, { method: 'POST', body: form, signal: ctrl.signal });
+    clearTimeout(tid);
+    if (res.ok) {
+      const body = await res.json();
+      if (body.success) return body.data;
+      throw new Error(body.error || 'Extraction failed');
+    }
+    const errBody = await res.json().catch(() => ({}));
+    throw new Error(errBody.error || `Extraction failed (HTTP ${res.status})`);
+  } catch (backendErr) {
+    // Backend unreachable — fall through to Claude Vision fallback
+    if (backendErr.message && !backendErr.name?.includes('Abort') &&
+        !backendErr.message.includes('fetch') && !backendErr.message.includes('Failed') &&
+        !backendErr.message.includes('NetworkError') && !backendErr.message.includes('ECONNREFUSED') &&
+        backendErr.name !== 'AbortError' && !String(backendErr).includes('abort')) {
+      throw backendErr; // real extraction error from a running backend
+    }
   }
 
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Extraction failed (HTTP ${res.status})`);
+  // ── Claude Vision fallback: read PDF as base64, ask Claude to extract ECG data ──
+  const base64 = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = () => reject(new Error('Failed to read PDF file'));
+    reader.readAsDataURL(pdfFile);
+  });
+
+  const claudeRes = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1000,
+      messages: [{
+        role: 'user',
+        content: [
+          {
+            type: 'document',
+            source: { type: 'base64', media_type: 'application/pdf', data: base64 },
+          },
+          {
+            type: 'text',
+            text: `You are an expert clinical cardiologist and ECG analyst. Analyze this ECG PDF and respond ONLY with a valid JSON object — no markdown, no preamble, no explanation.
+
+The JSON must have exactly these fields:
+{
+  "summary": "<1-2 sentence overall ECG interpretation>",
+  "findings": ["<finding 1>", "<finding 2>", ...],
+  "heartRate": "<e.g. 72 bpm or — if unclear>",
+  "prInterval": "<e.g. 0.16s or — if unclear>",
+  "qrsDuration": "<e.g. 0.09s or — if unclear>",
+  "qtInterval": "<e.g. 0.40s or — if unclear>",
+  "leads": {
+    "lead0": [<50 evenly-sampled amplitude values in mV for Lead I, floats>],
+    "lead1": [<50 values for Lead II>],
+    "lead2": [<50 values for Lead III>],
+    "lead3": [<50 values for aVR>],
+    "lead4": [<50 values for aVL>],
+    "lead5": [<50 values for aVF>]
+  },
+  "fs": 100
+}
+
+For the leads arrays: estimate relative amplitudes in mV (typical range −2.0 to +2.0). If a lead is not visible, use a flat zero array. Output ONLY the JSON object.`,
+          },
+        ],
+      }],
+    }),
+  });
+
+  if (!claudeRes.ok) {
+    const errText = await claudeRes.text().catch(() => '');
+    throw new Error(`Claude Vision analysis failed (HTTP ${claudeRes.status}): ${errText.slice(0, 120)}`);
   }
 
-  const body = await res.json();
-  if (!body.success) throw new Error(body.error || 'Extraction failed');
-  return body.data;
+  const claudeData = await claudeRes.json();
+  const rawText = (claudeData.content ?? [])
+    .filter(b => b.type === 'text')
+    .map(b => b.text)
+    .join('');
+
+  // Strip possible markdown fences
+  const jsonStr = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
+  let extracted;
+  try {
+    extracted = JSON.parse(jsonStr);
+  } catch {
+    throw new Error('Claude returned an unexpected response format. Please try again.');
+  }
+
+  return extracted;
 }
 
 // ── Step 2: Send numeric signals to backend → backend writes .hea + .dat → runs model ──
@@ -627,7 +703,7 @@ export default function ECGCalculator() {
                 <div className="prediction-placeholder" style={{ padding:'28px 10px' }}>
                   <div className="prediction-placeholder-icon"><svg viewBox="0 0 24 24" fill="currentColor" width="36" height="36" style={{color:'var(--blue)'}}><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg></div>
                   <p className="prediction-placeholder-text">
-                    {inputMode === 'pdf' ? `Step 1: Vision digitizing ECG → Step 2: ${activeModel?.name} classifying…` : `Running ${activeModel?.name} on backend…`}
+                    {inputMode === 'pdf' ? `Analyzing ECG with Claude Vision → ${activeModel?.name} classifying…` : `Running ${activeModel?.name} on backend…`}
                   </p>
                 </div>
               )}
