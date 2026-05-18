@@ -309,6 +309,136 @@ def ecg_analyze():
         os.unlink(hea_tmp.name)
         os.unlink(dat_tmp.name)
 
+@app.route("/api/ecg/analyze-from-signal", methods=["POST"])
+def ecg_analyze_from_signal():
+    """
+    Receives ECG signal data extracted from a PDF by Claude Vision,
+    converts it to WFDB .hea + .dat files, then runs the existing
+    model pipeline — identical to uploading real WFDB files.
+
+    Expected JSON body:
+    {
+        "modelId":   "proposed" | "te" | "gat",
+        "threshold": 0.5,
+        "record":    "ecg_from_pdf",
+        "leads":     {               # numeric amplitude arrays from Claude Vision
+            "lead0": [float, ...],   # Lead I   (must be provided)
+            "lead1": [float, ...],   # Lead II
+            "lead2": [float, ...],   # Lead III
+            "lead3": [float, ...],   # aVR
+            "lead4": [float, ...],   # aVL
+            "lead5": [float, ...],   # aVF
+            "lead6": [float, ...],   # V1  (optional; mirrored if absent)
+            ...up to lead11 (V6)
+        },
+        "fs":        100             # sampling frequency (default 100 Hz)
+    }
+    """
+    body      = request.get_json(force=True) or {}
+    model_id  = body.get("modelId", "proposed")
+    threshold = float(body.get("threshold", DEFAULT_THRESHOLD))
+    record    = body.get("record", "ecg_from_pdf")
+    leads_raw = body.get("leads", {})
+    fs        = int(body.get("fs", 100))
+
+    if model_id not in MODEL_REGISTRY:
+        return jsonify({"success": False, "error": f"Unknown model '{model_id}'"}), 400
+    if not leads_raw:
+        return jsonify({"success": False, "error": "No lead signal data provided"}), 400
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        # ── Build 12-lead array ──────────────────────────────────
+        # Collect however many leads Vision returned (at least 1)
+        lead_arrays = []
+        for i in range(12):
+            key = f"lead{i}"
+            if key in leads_raw and leads_raw[key]:
+                lead_arrays.append(np.array(leads_raw[key], dtype=np.float32))
+            elif lead_arrays:
+                # Mirror the last available lead for missing ones
+                lead_arrays.append(lead_arrays[-1].copy())
+            else:
+                lead_arrays.append(np.zeros(1000, dtype=np.float32))
+
+        # Pad / trim all leads to the same length
+        n_samples = max(len(a) for a in lead_arrays)
+        for i in range(12):
+            a = lead_arrays[i]
+            if len(a) < n_samples:
+                lead_arrays[i] = np.pad(a, (0, n_samples - len(a)), mode="edge")
+            elif len(a) > n_samples:
+                lead_arrays[i] = a[:n_samples]
+
+        signal_np = np.stack(lead_arrays, axis=0)   # (12, T)
+        signal_T  = signal_np.T                      # (T, 12)  — wfdb expects (T, n_leads)
+
+        # ── Write WFDB .hea + .dat ───────────────────────────────
+        rec_path = os.path.join(tmp_dir, record)
+        sig_names = ["I","II","III","aVR","aVL","aVF","V1","V2","V3","V4","V5","V6"]
+        import wfdb
+        wfdb.wrsamp(
+            rec_path,
+            fs=fs,
+            units=["mV"] * 12,
+            sig_name=sig_names,
+            p_signal=signal_T,
+            fmt=["16"] * 12,
+        )
+
+        # ── Run through the existing _load_ecg + model pipeline ─
+        hea_path = rec_path + ".hea"
+        dat_path = rec_path + ".dat"
+        tensor, record_name, signal, fields = _load_ecg(hea_path, dat_path)
+        model = _load_model(model_id)
+
+        with torch.no_grad():
+            probs = model(tensor.to(DEVICE)).cpu().numpy()[0]   # (5,)
+
+        pcts     = (probs * 100).tolist()
+        detected = [CLASSES[i] for i, p in enumerate(probs) if p > threshold]
+        all_preds = sorted(
+            [{"cls": c, "label": CLASS_LABELS[c],
+              "pct": round(pcts[i], 1), "detected": probs[i] > threshold}
+             for i, c in enumerate(CLASSES)],
+            key=lambda x: -x["pct"],
+        )
+
+        # Save to CSV
+        row = {"timestamp": datetime.now().isoformat(), "record": record_name,
+               "model": model_id, "source": "pdf",
+               "detected": "|".join(detected) or "NONE",
+               **{c: round(float(p), 4) for c, p in zip(CLASSES, probs)}}
+        df = pd.DataFrame([row])
+        if os.path.exists(CSV_PATH):
+            df.to_csv(CSV_PATH, mode="a", header=False, index=False)
+        else:
+            df.to_csv(CSV_PATH, index=False)
+
+        return jsonify({
+            "success":       True,
+            "record":        record_name,
+            "modelId":       model_id,
+            "threshold":     threshold,
+            "device":        DEVICE.upper(),
+            "predictions":   all_preds,
+            "detected":      [{"cls": d, "label": CLASS_LABELS[d]} for d in detected],
+            "waveformData":  _waveform_to_polylines(signal),
+            "signalMetrics": _signal_metrics(fields),
+            "metrics":       MODEL_METRICS.get(model_id, {}),
+            "timestamp":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "source":        "pdf",
+        })
+
+    except FileNotFoundError as e:
+        return jsonify({"success": False, "error": str(e)}), 404
+    except Exception as e:
+        log.exception("PDF ECG analysis failed")
+        return jsonify({"success": False, "error": str(e)}), 500
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 @app.route("/api/results/history")
 def results_history():
     model_id = request.args.get("modelId")
