@@ -14,8 +14,12 @@
 
 import os, shutil, tempfile, threading, logging, json, sys
 from datetime import datetime
-# add ecg_extractor from same dir
-sys.path.insert(0, os.path.dirname(__file__))
+
+# Ensure ecg_extractor.py is importable regardless of working directory
+# (handles Render, Railway, local dev — __file__ is always the api.py path)
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from ecg_extractor import extract_ecg_from_pdf
 
 import numpy  as np
