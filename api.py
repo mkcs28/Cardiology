@@ -154,13 +154,7 @@ MODEL_CLASSES = {
 # ── App ───────────────────────────────────────────────────────
 app    = Flask(__name__)
 CORS(app, resources={r"/api/*": {
-    "origins": [
-        "http://localhost:5173",   # Vite dev server
-        "http://localhost:3000",   # alt dev port
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000",
-        "*",                       # production CDN / Render / Vercel
-    ],
+    "origins": "*",
     "methods": ["GET", "POST", "OPTIONS"],
     "allow_headers": ["Content-Type"],
 }})
