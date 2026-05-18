@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────
 
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";
-const TIMEOUT_MS = 4000;
+const TIMEOUT_MS = 15000;
 
 async function _fetchWithTimeout(url, options = {}) {
   const controller = new AbortController();
@@ -28,18 +28,14 @@ async function _json(res) {
   return data;
 }
 
-// ── Track backend availability ────────────────────────────────
-let _backendAvailable = null; // null = unknown, true/false after first check
-
+// ── Check backend availability (always fresh — no stale caching) ──
 async function _isBackendUp() {
-  if (_backendAvailable !== null) return _backendAvailable;
   try {
     const res = await _fetchWithTimeout(`${BASE}/health`);
-    _backendAvailable = res.ok;
+    return res.ok;
   } catch {
-    _backendAvailable = false;
+    return false;
   }
-  return _backendAvailable;
 }
 
 // ── Health / status ──────────────────────────────────────────
@@ -48,10 +44,8 @@ export async function fetchHealth() {
   try {
     const res = await _fetchWithTimeout(`${BASE}/health`);
     const data = await _json(res);
-    _backendAvailable = true;
     return data;
   } catch {
-    _backendAvailable = false;
     throw new Error("Backend offline");
   }
 }
