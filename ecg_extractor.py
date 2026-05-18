@@ -221,6 +221,12 @@ def extract_strip_signal(trace_mask: np.ndarray,
     h, w = roi.shape
     baseline_y = h / 2.0   # assume midpoint of strip = isoelectric baseline
 
+    # Sanity-clamp grid_pitch: must be between 0.5 mm and 3 mm worth of pixels.
+    # If detect_grid_pitch failed, this keeps mV values in a sane range.
+    min_pitch = DPI / 25.4 * 0.5   # 0.5 mm at render DPI
+    max_pitch = DPI / 25.4 * 3.0   # 3.0 mm at render DPI
+    grid_pitch = float(np.clip(grid_pitch, min_pitch, max_pitch))
+
     # Pixel → mV scale: grid_pitch px = 1 mm, 10 mm = 1 mV
     px_per_mv = grid_pitch * MM_PER_MV
 
@@ -242,10 +248,12 @@ def extract_strip_signal(trace_mask: np.ndarray,
     # Convert: upward deflection = positive mV
     signal_mv = -(raw_y - baseline_y) / px_per_mv
 
+    # Hard clamp to ±5 mV — any larger value is a calibration error
+    signal_mv = np.clip(signal_mv, -5.0, 5.0)
+
     # Determine native sampling rate from grid pitch
-    # 25 mm/s, grid_pitch px/mm  → px/s → 1/px = s/px → fs = px/s
-    px_per_s = grid_pitch * MM_PER_S
-    native_fs = px_per_s   # samples per second at full image resolution
+    px_per_s  = grid_pitch * MM_PER_S
+    native_fs = px_per_s
 
     # Resample to TARGET_FS
     n_out = max(1, int(round(len(signal_mv) * TARGET_FS / native_fs)))
@@ -257,7 +265,10 @@ def extract_strip_signal(trace_mask: np.ndarray,
         b, a = scipy_signal.butter(2, [0.5 / nyq, 40.0 / nyq], btype='band')
         resampled = scipy_signal.filtfilt(b, a, resampled)
     except Exception:
-        pass   # if signal too short, skip filtering
+        pass   # signal too short, skip filtering
+
+    # Final clamp after filtering
+    resampled = np.clip(resampled, -5.0, 5.0)
 
     return resampled, float(TARGET_FS)
 
