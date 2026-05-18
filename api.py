@@ -345,6 +345,8 @@ def ecg_analyze_from_signal():
     model_id  = body.get("modelId", "proposed")
     threshold = float(body.get("threshold", DEFAULT_THRESHOLD))
     record    = body.get("record", "ecg_from_pdf")
+    # wfdb requires record names with only letters, digits, hyphens, underscores
+    record = re.sub(r'[^A-Za-z0-9_-]', '_', record)[:40] or "ecg_from_pdf"
     leads_raw = body.get("leads", {})
     fs        = int(body.get("fs", 100))
 
