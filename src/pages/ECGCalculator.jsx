@@ -49,16 +49,22 @@ async function extractSignalsFromPDF(pdfFile) {
           },
           {
             type: 'text',
-            text: `You are a clinical ECG digitization AI. Carefully examine this ECG PDF and digitize the waveforms into numeric amplitude samples so they can be fed into a deep learning model.
+            text: `You are a clinical ECG digitization AI. Carefully examine this ECG PDF and digitize the waveforms into numeric amplitude samples so they can be fed into a deep learning arrhythmia classifier.
 
-For each visible lead, trace the waveform and produce an array of exactly 1000 evenly-spaced amplitude values in millivolts (mV).
-Baseline (isoelectric line) = 0.0 mV. Upward deflections are positive, downward are negative. Typical range: -2.0 to +2.0 mV.
+IMPORTANT — identify the ECG format first:
+- If this is a single-lead recording (e.g. Kardia, AliveCor, Apple Watch), you will see 1–2 rhythm strips. Digitize the visible lead(s) and synthesize the remaining leads from the morphology.
+- If this is a standard 12-lead ECG, digitize all 12 leads.
+
+For each lead, produce exactly 1000 evenly-spaced amplitude values in millivolts (mV).
+Baseline (isoelectric line) = 0.0 mV. Upward deflections positive, downward negative. Typical range: −2.0 to +2.0 mV.
+Trace QRS complexes, P waves, T waves and baseline carefully from the paper grid. Scale: 10mm = 1mV, 25mm/s standard unless noted.
 
 Also extract the visible clinical measurements.
 
 Respond ONLY with a valid JSON object — no markdown, no backticks, no explanation:
 {
   "fs": 100,
+  "leadCount": <1, 2, 6, or 12>,
   "heartRate": "<number> bpm",
   "prInterval": "<decimal>s",
   "qrsDuration": "<decimal>s",
@@ -66,22 +72,20 @@ Respond ONLY with a valid JSON object — no markdown, no backticks, no explanat
   "summary": "<2-3 sentence clinical summary>",
   "findings": ["<finding1>", "<finding2>"],
   "leads": {
-    "lead0":  [<1000 float mV values — Lead I>],
-    "lead1":  [<1000 float mV values — Lead II>],
-    "lead2":  [<1000 float mV values — Lead III>],
-    "lead3":  [<1000 float mV values — aVR>],
-    "lead4":  [<1000 float mV values — aVL>],
-    "lead5":  [<1000 float mV values — aVF>],
-    "lead6":  [<1000 float mV values — V1>],
-    "lead7":  [<1000 float mV values — V2>],
-    "lead8":  [<1000 float mV values — V3>],
-    "lead9":  [<1000 float mV values — V4>],
-    "lead10": [<1000 float mV values — V5>],
-    "lead11": [<1000 float mV values — V6>]
+    "lead0":  [<1000 float mV values — Lead I or primary strip>],
+    "lead1":  [<1000 float mV values — Lead II or secondary strip, synthesize if not visible>],
+    "lead2":  [<1000 float mV values — Lead III, synthesize if not visible>],
+    "lead3":  [<1000 float mV values — aVR, synthesize if not visible>],
+    "lead4":  [<1000 float mV values — aVL, synthesize if not visible>],
+    "lead5":  [<1000 float mV values — aVF, synthesize if not visible>],
+    "lead6":  [<1000 float mV values — V1, synthesize if not visible>],
+    "lead7":  [<1000 float mV values — V2, synthesize if not visible>],
+    "lead8":  [<1000 float mV values — V3, synthesize if not visible>],
+    "lead9":  [<1000 float mV values — V4, synthesize if not visible>],
+    "lead10": [<1000 float mV values — V5, synthesize if not visible>],
+    "lead11": [<1000 float mV values — V6, synthesize if not visible>]
   }
-}
-
-Provide all 12 leads. If a lead is not visible in the PDF, synthesize it from nearby leads with similar morphology.`,
+}`,
           },
         ],
       }],
@@ -96,39 +100,110 @@ Provide all 12 leads. If a lead is not visible in the PDF, synthesize it from ne
 }
 
 // ── Step 2: Send numeric signals to backend → backend writes .hea + .dat → runs model ──
-async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
-  // Step 1 — Vision extracts numeric signal arrays from the PDF
-  const extracted = await extractSignalsFromPDF(pdfFile);
+// ── Mock model probabilities seeded from Vision clinical data ──
+const ECG_CLASSES_PDF = [
+  { cls: 'NORM', label: 'Normal Sinus Rhythm' },
+  { cls: 'CD',   label: 'Conduction Disturbance' },
+  { cls: 'HYP',  label: 'Hypertrophy' },
+  { cls: 'MI',   label: 'Myocardial Infarction' },
+  { cls: 'STTC', label: 'ST/T-wave Change' },
+];
+const MODEL_METRICS_PDF = {
+  te:       { sensitivity: '95.8%', specificity: '96.1%', auc: '0.974' },
+  gat:      { sensitivity: '96.5%', specificity: '97.0%', auc: '0.978' },
+  proposed: { sensitivity: '98.2%', specificity: '98.9%', auc: '0.991' },
+};
 
-  // Step 2 — POST signal arrays to backend; backend writes WFDB files and runs selected model
-  const record = pdfFile.name.replace(/\.pdf$/i, '');
-  const response = await fetch(`${apiBase}/ecg/analyze-from-signal`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      modelId,
-      threshold,
-      record,
-      leads: extracted.leads,
-      fs:    extracted.fs ?? 100,
-    }),
+function _mockPDFResult(extracted, pdfFile, modelId, threshold) {
+  // Seed from filename so results are deterministic per file
+  const seed = pdfFile.name + modelId;
+  const hash = s => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h) ^ s.charCodeAt(i); return Math.abs(h); };
+  const seeded = (k, lo, hi) => lo + ((hash(k) % 1000) / 1000) * (hi - lo);
+
+  // If Vision found "Normal Sinus Rhythm" in findings/summary, skew NORM high
+  const isNormal = (extracted.summary + (extracted.findings ?? []).join(' ')).toLowerCase().includes('normal');
+  const raw = ECG_CLASSES_PDF.map((c, i) => {
+    let v = seeded(seed + i, 2, 30);
+    if (c.cls === 'NORM') v *= isNormal ? 4.5 : 1.2;
+    return v;
   });
+  const total = raw.reduce((a, b) => a + b, 0);
+  const predictions = ECG_CLASSES_PDF.map((c, i) => ({
+    cls: c.cls, label: c.label,
+    pct: parseFloat(((raw[i] / total) * 100).toFixed(1)),
+    detected: (raw[i] / total) > threshold,
+  })).sort((a, b) => b.pct - a.pct);
 
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err.error || `Backend error ${response.status}`);
+  // Build waveform polylines from the Vision-extracted lead arrays
+  const waveformData = {};
+  for (let i = 0; i < 6; i++) {
+    const key = `lead${i}`;
+    const arr = extracted.leads?.[key];
+    if (arr && arr.length > 0) {
+      // Convert mV values → SVG y coords (baseline 70, scale 30px/mV)
+      const step = 500 / (arr.length - 1);
+      waveformData[key] = arr.map((v, xi) => {
+        const x = (xi * step).toFixed(1);
+        const y = Math.max(5, Math.min(135, 70 - v * 30)).toFixed(1);
+        return `${x},${y}`;
+      }).join(' ');
+    }
   }
 
-  const result = await response.json();
-  if (!result.success) throw new Error(result.error || 'Analysis failed');
-
-  // Attach Vision-extracted clinical text to the model result
   return {
-    ...result,
+    success: true,
+    record: pdfFile.name.replace(/\.pdf$/i, ''),
+    modelId,
+    threshold,
+    device: `${modelId.toUpperCase()} (backend offline — mock)`,
+    predictions,
+    detected: predictions.filter(p => p.detected),
+    waveformData,
+    signalMetrics: {
+      heartRate:   extracted.heartRate   ?? '—',
+      prInterval:  extracted.prInterval  ?? '—',
+      qrsDuration: extracted.qrsDuration ?? '—',
+      qtInterval:  extracted.qtInterval  ?? '—',
+    },
+    metrics: MODEL_METRICS_PDF[modelId] ?? MODEL_METRICS_PDF.proposed,
     pdfSummary:  extracted.summary  ?? '',
     pdfFindings: extracted.findings ?? [],
+    timestamp: new Date().toLocaleString(),
     _fromPDF: true,
+    _mock: true,
   };
+}
+
+async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
+  // Step 1 — Vision digitizes the ECG waveforms into numeric signal arrays
+  const extracted = await extractSignalsFromPDF(pdfFile);
+
+  // Step 2 — Try to reach the backend; fall back to mock if offline
+  const record = pdfFile.name.replace(/\.pdf$/i, '');
+  let backendUp = false;
+  try {
+    const health = await fetch(`${apiBase}/health`, { signal: AbortSignal.timeout(3000) });
+    backendUp = health.ok;
+  } catch { backendUp = false; }
+
+  if (backendUp) {
+    // Backend is running — send signals; it writes .hea + .dat and runs the real model
+    const response = await fetch(`${apiBase}/ecg/analyze-from-signal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelId, threshold, record, leads: extracted.leads, fs: extracted.fs ?? 100 }),
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error || `Backend error ${response.status}`);
+    }
+    const result = await response.json();
+    if (!result.success) throw new Error(result.error || 'Analysis failed');
+    return { ...result, pdfSummary: extracted.summary ?? '', pdfFindings: extracted.findings ?? [], _fromPDF: true };
+  }
+
+  // Backend offline — use Vision data with mock model probabilities
+  return _mockPDFResult(extracted, pdfFile, modelId, threshold);
 }
 
 
@@ -392,7 +467,7 @@ export default function ECGCalculator() {
                   Upload ECG PDF Report
                 </h3>
                 <p style={{ fontSize:'0.82rem', color:'var(--text-muted)', marginBottom:8 }}>
-                  Upload a PDF containing an ECG printout or report. Claude AI will visually read the waveforms and perform clinical analysis.
+                  Upload a PDF containing an ECG printout or report. Supports 12-lead, single-lead (Kardia/AliveCor), and Holter recordings.
                 </p>
                 <div style={{
                   display:'inline-flex', alignItems:'center', gap:6, marginBottom:18,
@@ -401,7 +476,7 @@ export default function ECGCalculator() {
                   padding:'4px 12px', fontSize:'0.74rem', fontWeight:600, color:'#5c35a8',
                 }}>
                   <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M12 2a10 10 0 100 20A10 10 0 0012 2zm1 14.93V17a1 1 0 01-2 0v-.07A8 8 0 014 12a8 8 0 018-8 8 8 0 018 8 8 8 0 01-7 7.93zM12 6a1 1 0 110 2 1 1 0 010-2zm1 4v6h-2v-6h2z"/></svg>
-                  Powered by Claude Vision AI — works without a backend
+                  Claude Vision digitizes signals → your model classifies
                 </div>
 
                 <input type="file" ref={pdfRef} style={{ display:'none' }} accept=".pdf"
@@ -478,6 +553,12 @@ export default function ECGCalculator() {
                     <p style={{ fontSize:'0.74rem', fontWeight:700, color:'#673ab7', marginBottom:6, textTransform:'uppercase', letterSpacing:'0.05em' }}>
                       AI Clinical Summary
                     </p>
+                    {pdfResult._mock && (
+                      <p style={{ fontSize:'0.72rem', color:'#e65100', fontWeight:600, marginBottom:8,
+                        background:'rgba(230,81,0,0.07)', borderRadius:6, padding:'4px 8px' }}>
+                        ⚠ Backend offline — model probabilities are simulated. Start the Flask backend for real model inference.
+                      </p>
+                    )}
                     <p style={{ fontSize:'0.84rem', color:'var(--text-primary)', lineHeight:1.6, margin:0 }}>{pdfResult.pdfSummary}</p>
                     {pdfResult.pdfFindings?.length > 0 && (
                       <ul style={{ margin:'10px 0 0', paddingLeft:18 }}>
