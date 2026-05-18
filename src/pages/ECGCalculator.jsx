@@ -178,31 +178,39 @@ async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
   // Step 1 — Vision digitizes the ECG waveforms into numeric signal arrays
   const extracted = await extractSignalsFromPDF(pdfFile);
 
-  // Step 2 — Try to reach the backend; fall back to mock if offline
-  const record = pdfFile.name.replace(/\.pdf$/i, '');
+  // Step 2 — Check if backend is reachable (3s timeout, compatible with all browsers)
   let backendUp = false;
   try {
-    const health = await fetch(`${apiBase}/health`, { signal: AbortSignal.timeout(3000) });
+    const ctrl = new AbortController();
+    const tid  = setTimeout(() => ctrl.abort(), 3000);
+    const health = await fetch(`${apiBase}/health`, { signal: ctrl.signal });
+    clearTimeout(tid);
     backendUp = health.ok;
   } catch { backendUp = false; }
 
   if (backendUp) {
-    // Backend is running — send signals; it writes .hea + .dat and runs the real model
-    const response = await fetch(`${apiBase}/ecg/analyze-from-signal`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ modelId, threshold, record, leads: extracted.leads, fs: extracted.fs ?? 100 }),
-    });
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err.error || `Backend error ${response.status}`);
+    // Backend running — send signals; it writes .hea + .dat and runs the real model
+    try {
+      const record = pdfFile.name.replace(/\.pdf$/i, '');
+      const response = await fetch(`${apiBase}/ecg/analyze-from-signal`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ modelId, threshold, record, leads: extracted.leads, fs: extracted.fs ?? 100 }),
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || `Backend error ${response.status}`);
+      }
+      const result = await response.json();
+      if (!result.success) throw new Error(result.error || 'Analysis failed');
+      return { ...result, pdfSummary: extracted.summary ?? '', pdfFindings: extracted.findings ?? [], _fromPDF: true };
+    } catch (err) {
+      // Backend was up but request failed — still fall back to mock
+      console.warn('Backend request failed, using mock:', err.message);
     }
-    const result = await response.json();
-    if (!result.success) throw new Error(result.error || 'Analysis failed');
-    return { ...result, pdfSummary: extracted.summary ?? '', pdfFindings: extracted.findings ?? [], _fromPDF: true };
   }
 
-  // Backend offline — use Vision data with mock model probabilities
+  // Backend offline or request failed — use Vision data with mock model probabilities
   return _mockPDFResult(extracted, pdfFile, modelId, threshold);
 }
 
