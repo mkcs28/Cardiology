@@ -25,78 +25,32 @@ function PolylineWave({ points, stroke, opacity = 1, offset = 0 }) {
     strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" opacity={opacity} />;
 }
 
-// ── Step 1: Claude Vision digitizes ECG waveforms into numeric signal arrays ──
-async function extractSignalsFromPDF(pdfFile) {
-  const base64Data = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(',')[1]);
-    reader.onerror = () => reject(new Error('Failed to read PDF'));
-    reader.readAsDataURL(pdfFile);
-  });
+// ── Step 1: Image-processing ECG signal extraction ──────────────────────────────
+// ── Step 1: Image-processing ECG extractor ────────────────────────────────
+// PDF → rasterize → detect grid → isolate trace pixels → mV values
+// No Claude / AI API used. Backend runs ecg_extractor.py (PyMuPDF + OpenCV).
+async function extractSignalsFromPDF(pdfFile, apiBase) {
+  const form = new FormData();
+  form.append('pdfFile', pdfFile);
 
-  const response = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'document',
-            source: { type: 'base64', media_type: 'application/pdf', data: base64Data },
-          },
-          {
-            type: 'text',
-            text: `You are a clinical ECG digitization AI. Carefully examine this ECG PDF and digitize the waveforms into numeric amplitude samples so they can be fed into a deep learning arrhythmia classifier.
-
-IMPORTANT — identify the ECG format first:
-- If this is a single-lead recording (e.g. Kardia, AliveCor, Apple Watch), you will see 1–2 rhythm strips. Digitize the visible lead(s) and synthesize the remaining leads from the morphology.
-- If this is a standard 12-lead ECG, digitize all 12 leads.
-
-For each lead, produce exactly 1000 evenly-spaced amplitude values in millivolts (mV).
-Baseline (isoelectric line) = 0.0 mV. Upward deflections positive, downward negative. Typical range: −2.0 to +2.0 mV.
-Trace QRS complexes, P waves, T waves and baseline carefully from the paper grid. Scale: 10mm = 1mV, 25mm/s standard unless noted.
-
-Also extract the visible clinical measurements.
-
-Respond ONLY with a valid JSON object — no markdown, no backticks, no explanation:
-{
-  "fs": 100,
-  "leadCount": <1, 2, 6, or 12>,
-  "heartRate": "<number> bpm",
-  "prInterval": "<decimal>s",
-  "qrsDuration": "<decimal>s",
-  "qtInterval": "<decimal>s",
-  "summary": "<2-3 sentence clinical summary>",
-  "findings": ["<finding1>", "<finding2>"],
-  "leads": {
-    "lead0":  [<1000 float mV values — Lead I or primary strip>],
-    "lead1":  [<1000 float mV values — Lead II or secondary strip, synthesize if not visible>],
-    "lead2":  [<1000 float mV values — Lead III, synthesize if not visible>],
-    "lead3":  [<1000 float mV values — aVR, synthesize if not visible>],
-    "lead4":  [<1000 float mV values — aVL, synthesize if not visible>],
-    "lead5":  [<1000 float mV values — aVF, synthesize if not visible>],
-    "lead6":  [<1000 float mV values — V1, synthesize if not visible>],
-    "lead7":  [<1000 float mV values — V2, synthesize if not visible>],
-    "lead8":  [<1000 float mV values — V3, synthesize if not visible>],
-    "lead9":  [<1000 float mV values — V4, synthesize if not visible>],
-    "lead10": [<1000 float mV values — V5, synthesize if not visible>],
-    "lead11": [<1000 float mV values — V6, synthesize if not visible>]
+  let res;
+  try {
+    res = await fetch(`${apiBase}/ecg/extract-pdf`, { method: 'POST', body: form });
+  } catch (err) {
+    throw new Error(
+      'Cannot reach the Flask backend. Start it with: python api.py\n' +
+      'The backend converts your PDF to an image and extracts waveforms using OpenCV — no API key needed.'
+    );
   }
-}`,
-          },
-        ],
-      }],
-    }),
-  });
 
-  if (!response.ok) throw new Error(`Claude Vision API error ${response.status}`);
-  const data = await response.json();
-  const text = data.content.map(b => b.text || '').join('');
-  const clean = text.replace(/```json|```/g, '').trim();
-  return JSON.parse(clean);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Extraction failed (HTTP ${res.status})`);
+  }
+
+  const body = await res.json();
+  if (!body.success) throw new Error(body.error || 'Extraction failed');
+  return body.data;
 }
 
 // ── Step 2: Send numeric signals to backend → backend writes .hea + .dat → runs model ──
@@ -176,7 +130,7 @@ function _mockPDFResult(extracted, pdfFile, modelId, threshold) {
 
 async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
   // Step 1 — Vision digitizes the ECG waveforms into numeric signal arrays
-  const extracted = await extractSignalsFromPDF(pdfFile);
+  const extracted = await extractSignalsFromPDF(pdfFile, apiBase);
 
   // Step 2 — Check if backend is reachable (3s timeout, compatible with all browsers)
   let backendUp = false;
@@ -484,7 +438,7 @@ export default function ECGCalculator() {
                   padding:'4px 12px', fontSize:'0.74rem', fontWeight:600, color:'#5c35a8',
                 }}>
                   <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M12 2a10 10 0 100 20A10 10 0 0012 2zm1 14.93V17a1 1 0 01-2 0v-.07A8 8 0 014 12a8 8 0 018-8 8 8 0 018 8 8 8 0 01-7 7.93zM12 6a1 1 0 110 2 1 1 0 010-2zm1 4v6h-2v-6h2z"/></svg>
-                  Claude Vision digitizes signals → your model classifies
+                  Image-processing extracts signals → your model classifies
                 </div>
 
                 <input type="file" ref={pdfRef} style={{ display:'none' }} accept=".pdf"
@@ -664,7 +618,7 @@ export default function ECGCalculator() {
                 <div className="prediction-placeholder" style={{ padding:'28px 10px' }}>
                   <div className="prediction-placeholder-icon"><svg viewBox="0 0 24 24" fill="currentColor" width="36" height="36" style={{color:'var(--blue)'}}><path d="M9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4zm2.5 2.1h-15V5h15v14.1zm0-16.1h-15C4.22 3 3 4.22 3 5.5v13C3 19.78 4.22 21 5.5 21h15c1.28 0 2.5-1.22 2.5-2.5v-13C23 4.22 21.78 3 20.5 3z"/></svg></div>
                   <p className="prediction-placeholder-text">
-                    {inputMode === 'pdf' ? 'Upload an ECG PDF and click "Analyze" — Claude Vision will digitize the signals and your selected model will classify them.' : 'Upload .hea + .dat files and click Analyze to see real predictions.'}
+                    {inputMode === 'pdf' ? 'Upload an ECG PDF and click "Analyze" — signals are extracted from the PDF image using OpenCV, then your model classifies them.' : 'Upload .hea + .dat files and click Analyze to see real predictions.'}
                   </p>
                 </div>
               )}
