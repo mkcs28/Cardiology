@@ -12,8 +12,9 @@
 #    Start : gunicorn api:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
 # ============================================================
 
-import os, shutil, tempfile, threading, logging
+import os, shutil, tempfile, threading, logging, base64, json
 from datetime import datetime
+import urllib.request, urllib.error
 
 import numpy  as np
 import pandas as pd
@@ -437,6 +438,85 @@ def ecg_analyze_from_signal():
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@app.route("/api/ecg/extract-pdf", methods=["POST"])
+def ecg_extract_pdf():
+    """
+    Proxy endpoint: receives a PDF file, forwards it to the Anthropic API
+    (server-side, so no CORS issue), and returns the digitized ECG signal
+    arrays extracted by Claude Vision.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"success": False, "error": "ANTHROPIC_API_KEY not set on server"}), 500
+
+    pdf_file = request.files.get("pdfFile")
+    if not pdf_file:
+        return jsonify({"success": False, "error": "No pdfFile uploaded"}), 400
+
+    pdf_bytes  = pdf_file.read()
+    b64_data   = base64.b64encode(pdf_bytes).decode("utf-8")
+
+    prompt = (
+        "You are a clinical ECG digitization AI. Carefully examine this ECG PDF and digitize "
+        "the waveforms into numeric amplitude samples so they can be fed into a deep learning arrhythmia classifier.\n\n"
+        "IMPORTANT — identify the ECG format first:\n"
+        "- If this is a single-lead recording (e.g. Kardia, AliveCor, Apple Watch), digitize the visible lead(s) "
+        "and synthesize the remaining leads from the morphology.\n"
+        "- If this is a standard 12-lead ECG, digitize all 12 leads.\n\n"
+        "For each lead, produce exactly 1000 evenly-spaced amplitude values in millivolts (mV). "
+        "Baseline = 0.0 mV. Upward deflections positive, downward negative. Typical range: -2.0 to +2.0 mV. "
+        "Trace QRS complexes, P waves, T waves and baseline carefully. Scale: 10mm = 1mV, 25mm/s unless noted.\n\n"
+        "Respond ONLY with a valid JSON object — no markdown, no backticks, no explanation:\n"
+        '{"fs":100,"leadCount":<1,2,6,or 12>,"heartRate":"<n> bpm","prInterval":"<d>s",'
+        '"qrsDuration":"<d>s","qtInterval":"<d>s","summary":"<2-3 sentence clinical summary>",'
+        '"findings":["<f1>","<f2>"],'
+        '"leads":{"lead0":[<1000 floats Lead I>],"lead1":[<1000 floats Lead II>],'
+        '"lead2":[<1000 floats Lead III>],"lead3":[<1000 floats aVR>],'
+        '"lead4":[<1000 floats aVL>],"lead5":[<1000 floats aVF>],'
+        '"lead6":[<1000 floats V1>],"lead7":[<1000 floats V2>],'
+        '"lead8":[<1000 floats V3>],"lead9":[<1000 floats V4>],'
+        '"lead10":[<1000 floats V5>],"lead11":[<1000 floats V6>]}}'
+    )
+
+    payload = json.dumps({
+        "model": "claude-sonnet-4-20250514",
+        "max_tokens": 4096,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": b64_data}},
+                {"type": "text", "text": prompt},
+            ],
+        }],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=payload,
+        headers={
+            "Content-Type":      "application/json",
+            "x-api-key":         api_key,
+            "anthropic-version": "2023-06-01",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        text  = "".join(b.get("text", "") for b in body.get("content", []))
+        clean = text.replace("```json", "").replace("```", "").strip()
+        extracted = json.loads(clean)
+        return jsonify({"success": True, "data": extracted})
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="replace")
+        log.error("Anthropic API error %s: %s", e.code, err_body)
+        return jsonify({"success": False, "error": f"Anthropic API error {e.code}: {err_body}"}), 502
+    except Exception as e:
+        log.exception("PDF extraction failed")
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/results/history")
