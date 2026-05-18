@@ -159,12 +159,12 @@ async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
       if (!result.success) throw new Error(result.error || 'Analysis failed');
       return { ...result, pdfSummary: extracted.summary ?? '', pdfFindings: extracted.findings ?? [], _fromPDF: true };
     } catch (err) {
-      // Backend was up but request failed — still fall back to mock
-      console.warn('Backend request failed, using mock:', err.message);
+      // Backend was up but analyze-from-signal failed — surface the real error
+      throw new Error(`Model inference failed: ${err.message}`);
     }
   }
 
-  // Backend offline or request failed — use Vision data with mock model probabilities
+  // Backend offline — use mock model probabilities with extracted waveform data
   return _mockPDFResult(extracted, pdfFile, modelId, threshold);
 }
 
