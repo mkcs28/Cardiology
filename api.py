@@ -153,7 +153,17 @@ MODEL_CLASSES = {
 
 # ── App ───────────────────────────────────────────────────────
 app    = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "*"}})
+CORS(app, resources={r"/api/*": {
+    "origins": [
+        "http://localhost:5173",   # Vite dev server
+        "http://localhost:3000",   # alt dev port
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+        "*",                       # production CDN / Render / Vercel
+    ],
+    "methods": ["GET", "POST", "OPTIONS"],
+    "allow_headers": ["Content-Type"],
+}})
 _models = {}
 _lock   = threading.Lock()
 
@@ -319,7 +329,7 @@ def ecg_analyze():
 @app.route("/api/ecg/analyze-from-signal", methods=["POST"])
 def ecg_analyze_from_signal():
     """
-    Receives ECG signal data extracted from a PDF by OpenCV (ecg_extractor.py),
+    Receives ECG signal data extracted from a PDF by Claude Vision,
     converts it to WFDB .hea + .dat files, then runs the existing
     model pipeline — identical to uploading real WFDB files.
 
@@ -328,7 +338,7 @@ def ecg_analyze_from_signal():
         "modelId":   "proposed" | "te" | "gat",
         "threshold": 0.5,
         "record":    "ecg_from_pdf",
-        "leads":     {               # numeric amplitude arrays from OpenCV extraction
+        "leads":     {               # numeric amplitude arrays from Claude Vision
             "lead0": [float, ...],   # Lead I   (must be provided)
             "lead1": [float, ...],   # Lead II
             "lead2": [float, ...],   # Lead III
