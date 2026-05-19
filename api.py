@@ -287,12 +287,13 @@ def ecg_analyze_from_signal():
         sig_names = ["I","II","III","aVR","aVL","aVF","V1","V2","V3","V4","V5","V6"]
         import wfdb
         wfdb.wrsamp(
-            rec_path,
+            record,                          # just the record name, no path
             fs=fs,
             units=["mV"] * 12,
             sig_name=sig_names,
             p_signal=signal_T,
             fmt=["16"] * 12,
+            write_dir=tmp_dir,               # directory written separately
         )
 
         # ── Run through the existing _load_ecg + model pipeline ─
