@@ -24,11 +24,10 @@ from ecg_extractor import extract_ecg_from_pdf
 
 import numpy  as np
 import pandas as pd
-import torch
-import torch.nn as nn
 import wfdb
 from flask      import Flask, jsonify, request
 from flask_cors import CORS
+import numpy_inference as ni   # pure-NumPy model runner — no PyTorch needed
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("cardioai")
@@ -36,7 +35,7 @@ log = logging.getLogger("cardioai")
 # ── Config ───────────────────────────────────────────────────
 MODELS_DIR        = os.environ.get("MODELS_DIR", os.path.join(os.path.dirname(__file__), "models"))
 CSV_PATH          = os.path.join(MODELS_DIR, "recognition_results.csv")
-DEVICE            = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE            = "cpu"   # numpy inference — always CPU, no PyTorch
 DEFAULT_THRESHOLD = 0.5
 PORT              = int(os.environ.get("PORT", 5000))
 
@@ -61,123 +60,23 @@ MODEL_METRICS = {
     "proposed": {"sensitivity": "98.2%", "specificity": "98.9%", "auc": "0.991"},
 }
 
-# ── Exact model architectures from cardioai_backend.py ───────
-
-class TemporalEncoder(nn.Module):
-    def __init__(self, d=128):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv1d(12, 64,  3, padding=1, dilation=1), nn.ReLU(),
-            nn.Conv1d(64, 128, 3, padding=2, dilation=2), nn.ReLU(),
-            nn.Conv1d(128, d,  3, padding=4, dilation=4), nn.ReLU(),
-        )
-    def forward(self, x):
-        return self.net(x)
-
-class MultiHeadGAT(nn.Module):
-    def __init__(self, d, heads=4):
-        super().__init__()
-        self.W     = nn.Linear(d, d * heads)
-        self.heads = heads
-    def forward(self, Z):
-        B, L, d = Z.shape
-        Wh  = self.W(Z).view(B, L, self.heads, d)
-        out = []
-        for h in range(self.heads):
-            Wh_h = Wh[:, :, h, :]
-            A    = torch.softmax(Wh_h @ Wh_h.transpose(1, 2), dim=-1)
-            out.append(A @ Wh_h)
-        return torch.mean(torch.stack(out), dim=0)
-
-class TE_Transformer(nn.Module):
-    def __init__(self, d=128, nc=5):
-        super().__init__()
-        self.temp  = TemporalEncoder(d)
-        self.trans = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=d, nhead=4, batch_first=True),
-            num_layers=2,
-        )
-        self.fc = nn.Linear(d, nc)
-    def forward(self, x):
-        x = self.temp(x)
-        x = x.permute(0, 2, 1)
-        x = self.trans(x)
-        x = x.mean(1)
-        return torch.sigmoid(self.fc(x))
-
-class GAT_Transformer(nn.Module):
-    def __init__(self, d=128, nc=5):
-        super().__init__()
-        self.input_proj = nn.Conv1d(12, d, 1)
-        self.gat        = MultiHeadGAT(d)
-        self.trans      = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=d, nhead=4, batch_first=True),
-            num_layers=2,
-        )
-        self.fc = nn.Linear(d, nc)
-    def forward(self, x):
-        x = self.input_proj(x)
-        x = x.permute(0, 2, 1)
-        Z = x.mean(1).unsqueeze(1).repeat(1, 12, 1)
-        Z = self.gat(Z)
-        x = x + Z.mean(1, keepdim=True)
-        x = self.trans(x)
-        x = x.mean(1)
-        return torch.sigmoid(self.fc(x))
-
-class LAGTT(nn.Module):
-    def __init__(self, d=128, nc=5):
-        super().__init__()
-        self.temp  = TemporalEncoder(d)
-        self.gat   = MultiHeadGAT(d)
-        self.trans = nn.TransformerEncoder(
-            nn.TransformerEncoderLayer(d_model=d, nhead=4, batch_first=True),
-            num_layers=2,
-        )
-        self.fc = nn.Linear(d, nc)
-    def forward(self, x):
-        x = self.temp(x)
-        x = x.permute(0, 2, 1)
-        Z = x.mean(1).unsqueeze(1).repeat(1, 12, 1)
-        Z = self.gat(Z)
-        x = x + Z.mean(1, keepdim=True)
-        x = self.trans(x)
-        x = x.mean(1)
-        return torch.sigmoid(self.fc(x))
-
-MODEL_CLASSES = {
-    "te":       TE_Transformer,
-    "gat":      GAT_Transformer,
-    "proposed": LAGTT,
-}
-
 # ── App ───────────────────────────────────────────────────────
-app    = Flask(__name__)
-CORS(app, resources={r"/api/*": {
-    "origins": "*",
-    "methods": ["GET", "POST", "OPTIONS"],
-    "allow_headers": ["Content-Type"],
-}})
-_models = {}
-_lock   = threading.Lock()
+app   = Flask(__name__)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+_lock = threading.Lock()
 
-# ── Model loader ──────────────────────────────────────────────
+# ── Model loader (numpy — no PyTorch) ────────────────────────
 def _load_model(model_id: str):
+    """Load weights into numpy_inference cache (idempotent)."""
     with _lock:
-        if model_id in _models:
-            return _models[model_id]
+        if model_id in ni._cache:
+            return  # already loaded
         _, fname, _ = MODEL_REGISTRY[model_id]
         path = os.path.join(MODELS_DIR, fname)
         if not os.path.exists(path):
             raise FileNotFoundError(f"{fname} not found in {MODELS_DIR}")
-        cls = MODEL_CLASSES[model_id]
-        m   = cls(nc=len(CLASSES))
-        state = torch.load(path, map_location=DEVICE, weights_only=True)
-        m.load_state_dict(state)
-        m.to(DEVICE).eval()
-        _models[model_id] = m
-        log.info(f"Loaded {model_id} on {DEVICE}")
-        return m
+        ni.load_model(model_id, path)
+        log.info(f"Loaded {model_id} via numpy_inference (no PyTorch)")
 
 # ── ECG preprocessing (matches cardioai_backend.py exactly) ──
 def _load_ecg(hea_path: str, dat_path: str):
@@ -189,8 +88,7 @@ def _load_ecg(hea_path: str, dat_path: str):
         signal, fields = wfdb.rdsamp(os.path.join(tmp, base))  # (T, 12)
         signal = signal.T                                        # (12, T)
         signal = (signal - signal.mean()) / (signal.std() + 1e-8)
-        tensor = torch.tensor(signal, dtype=torch.float32).unsqueeze(0)  # (1, 12, T)
-        return tensor, base, signal, fields
+        return signal.astype(np.float32), base, signal, fields
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -223,7 +121,7 @@ def health():
     return jsonify({
         "success":      True,
         "device":       DEVICE.upper(),
-        "modelsLoaded": list(_models.keys()),
+        "modelsLoaded": list(ni._cache.keys()),
         "modelsDir":    MODELS_DIR,
         "timestamp":    datetime.now().isoformat(),
     })
@@ -236,7 +134,7 @@ def models_status():
             "name":    name,
             "file":    fname,
             "accuracy": acc,
-            "loaded":  mid in _models,
+            "loaded":  mid in ni._cache,
             "exists":  os.path.exists(os.path.join(MODELS_DIR, fname)),
         }
     return jsonify({"success": True, "models": statuses})
@@ -273,10 +171,8 @@ def ecg_analyze():
         dat_file.save(dat_tmp.name)
 
         tensor, record_name, signal, fields = _load_ecg(hea_tmp.name, dat_tmp.name)
-        model  = _load_model(model_id)
-
-        with torch.no_grad():
-            probs = model(tensor.to(DEVICE)).cpu().numpy()[0]  # (5,)
+        _load_model(model_id)
+        probs = ni.infer(model_id, tensor)   # tensor is already (12, T) numpy array
 
         pcts      = (probs * 100).tolist()
         detected  = [CLASSES[i] for i, p in enumerate(probs) if p > threshold]
@@ -403,10 +299,8 @@ def ecg_analyze_from_signal():
         hea_path = rec_path + ".hea"
         dat_path = rec_path + ".dat"
         tensor, record_name, signal, fields = _load_ecg(hea_path, dat_path)
-        model = _load_model(model_id)
-
-        with torch.no_grad():
-            probs = model(tensor.to(DEVICE)).cpu().numpy()[0]   # (5,)
+        _load_model(model_id)
+        probs = ni.infer(model_id, tensor)   # (12, T) numpy → (5,) probabilities
 
         pcts     = (probs * 100).tolist()
         detected = [CLASSES[i] for i, p in enumerate(probs) if p > threshold]
@@ -602,6 +496,40 @@ def cardio_predict():
     except Exception as e:
         log.exception("Cardio prediction failed")
         return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route("/api/ecg/claude-vision", methods=["POST"])
+def ecg_claude_vision():
+    """
+    Proxy endpoint: receives base64 PNG images + prompt from the frontend,
+    forwards them to the Anthropic API using the server-side ANTHROPIC_API_KEY,
+    and returns the raw Claude response.  Keeps the API key off the client.
+    """
+    import requests as _requests
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return jsonify({"success": False, "error": "ANTHROPIC_API_KEY not configured on server"}), 503
+
+    try:
+        payload = request.get_json(force=True)
+        if not payload:
+            return jsonify({"success": False, "error": "Empty request body"}), 400
+
+        r = _requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type":         "application/json",
+                "x-api-key":            api_key,
+                "anthropic-version":    "2023-06-01",
+            },
+            json=payload,
+            timeout=120,
+        )
+        return (r.content, r.status_code, {"Content-Type": "application/json"})
+    except Exception as e:
+        log.exception("Claude Vision proxy failed")
+        return jsonify({"success": False, "error": str(e)}), 500
+
 
 if __name__ == "__main__":
     log.info(f"CardioAI API · port={PORT} · device={DEVICE} · models={MODELS_DIR}")

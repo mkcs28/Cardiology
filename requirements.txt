@@ -3,8 +3,6 @@
 
 flask>=3.0
 flask-cors>=4.0
-# CPU-only torch — much smaller, sufficient for inference on Render free tier
-torch>=2.1 --index-url https://download.pytorch.org/whl/cpu
 wfdb>=4.1
 pandas>=2.1
 numpy>=1.26
@@ -13,3 +11,4 @@ gunicorn>=21.0
 
 pymupdf>=1.23
 opencv-python-headless>=4.8
+requests>=2.31
