@@ -174,11 +174,11 @@ def ecg_analyze():
         _load_model(model_id)
         probs = ni.infer(model_id, tensor)   # tensor is already (12, T) numpy array
 
-        pcts      = (probs * 100).tolist()
+        pcts      = [float(x) for x in probs * 100]
         detected  = [CLASSES[i] for i, p in enumerate(probs) if p > threshold]
         all_preds = sorted(
             [{"cls": c, "label": CLASS_LABELS[c],
-              "pct": round(pcts[i], 1), "detected": probs[i] > threshold}
+              "pct": round(pcts[i], 1), "detected": bool(probs[i] > threshold)}
              for i, c in enumerate(CLASSES)],
             key=lambda x: -x["pct"],
         )
@@ -303,11 +303,11 @@ def ecg_analyze_from_signal():
         _load_model(model_id)
         probs = ni.infer(model_id, tensor)   # (12, T) numpy → (5,) probabilities
 
-        pcts     = (probs * 100).tolist()
+        pcts     = [float(x) for x in probs * 100]
         detected = [CLASSES[i] for i, p in enumerate(probs) if p > threshold]
         all_preds = sorted(
             [{"cls": c, "label": CLASS_LABELS[c],
-              "pct": round(pcts[i], 1), "detected": probs[i] > threshold}
+              "pct": round(pcts[i], 1), "detected": bool(probs[i] > threshold)}
              for i, c in enumerate(CLASSES)],
             key=lambda x: -x["pct"],
         )
