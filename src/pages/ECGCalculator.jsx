@@ -6,9 +6,9 @@ import { useApi } from '../api/useApi';
 
 // ── Static model metadata (mirrors backend MODEL_REGISTRY) ───
 const MODELS = [
-  { id: 'te',       name: 'TE Transformer',  desc: 'Temporal Encoding transformer for time-series ECG analysis', acc: '96.2%', icon: 'bolt' },
-  { id: 'gat',      name: 'GAT Transformer', desc: 'Graph Attention Network for relational pattern learning',     acc: '97.1%', icon: 'link' },
-  { id: 'proposed', name: 'Proposed Model',  desc: 'Hybrid TE + GAT ensemble with superior accuracy',            acc: '98.7%', icon: 'trophy' },
+  { id: 'te',       name: 'TE Transformer',  desc: 'Temporal Encoding transformer for time-series ECG analysis', auc: '90.04%%', icon: 'bolt' },
+  { id: 'gat',      name: 'GAT Transformer', desc: 'Graph Attention Network for relational pattern learning',     auc: '88.14%%', icon: 'link' },
+  { id: 'proposed', name: 'Proposed Model',  desc: 'Hybrid TE + GAT ensemble with superior accuracy',            auc: '90.14%', icon: 'trophy' },
 ];
 
 const LEAD_LABELS = ['Lead I', 'Lead II', 'Lead III', 'aVR', 'aVL', 'aVF'];
