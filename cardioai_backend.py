@@ -192,7 +192,7 @@ def get_models_folder():
         if not found:
             print("  ⚠  No .pth files found in that folder.")
             continue
-        print(f"\n  ✅  Folder OK — found: {', '.join(found)}")
+        print(f"\n   Folder OK — found: {', '.join(found)}")
         return folder
 
 
@@ -222,7 +222,7 @@ def choose_model(models_folder):
         if not os.path.isfile(pth_path):
             print(f"  ⚠  {fname} not found. Train the model first or choose another.")
             continue
-        print(f"\n  ✅  Selected: {model_name}  ({MODEL_ACCURACY[choice]} accuracy)")
+        print(f"\n   Selected: {model_name}  ({MODEL_ACCURACY[choice]} accuracy)")
         return choice, model_name, pth_path
 
 
@@ -406,8 +406,8 @@ def save_csv(results, model_name, record_name, timestamp, models_folder):
         print(f"  {r['Record']:<16} {r['Model']:<20} {r['Class']:<6}"
               f" {r['Confidence']:>5.1%}  {r['Status']}")
     print("─" * W)
-    print(f"\n  💾  Saved  →  {csv_path}")
-    print(f"  📄  Total rows in file: {len(df_all)}\n")
+    print(f"\n    Saved  →  {csv_path}")
+    print(f"   Total rows in file: {len(df_all)}\n")
 
 
 # ===================== THRESHOLD PROMPT =====================
@@ -430,7 +430,7 @@ def get_threshold():
 
 def main():
     print("\n" + "═" * 64)
-    print("   🫀  CardioAI — ECG Diagnostic Recognition System")
+    print("     CardioAI — ECG Diagnostic Recognition System")
     print("        TE Transformer  |  GAT Transformer  |  Proposed Model")
     print("═" * 64)
     print(f"  Running on: {DEVICE.upper()}")
@@ -443,9 +443,9 @@ def main():
     print(f"\n  ⏳  Loading {model_name} from {os.path.basename(pth)} ...")
     try:
         model = load_model(choice, pth)
-        print(f"  ✅  Model ready on {DEVICE.upper()}")
+        print(f"   Model ready on {DEVICE.upper()}")
     except Exception as exc:
-        print(f"  ❌  Failed to load model: {exc}")
+        print(f"    Failed to load model: {exc}")
         return
 
     # ── Inference loop (multiple records, same model) ──────────
@@ -454,12 +454,12 @@ def main():
         threshold          = get_threshold()
         timestamp          = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        print("\n  ⚙️   Reading ECG and running inference ...")
+        print("\n     Reading ECG and running inference ...")
         try:
             ecg_tensor, record_name = load_ecg(hea_path, dat_path)
             results                 = run_inference(model, ecg_tensor, threshold)
         except Exception as exc:
-            print(f"  ❌  Inference failed: {exc}")
+            print(f"   Inference failed: {exc}")
             continue
 
         display_results(results, model_name, record_name, threshold, timestamp)
@@ -469,7 +469,7 @@ def main():
         if again != 'y':
             break
 
-    print("\n  👋  Session complete. Results saved to recognition_results.csv\n")
+    print("\n    Session complete. Results saved to recognition_results.csv\n")
 
 
 if __name__ == "__main__":
