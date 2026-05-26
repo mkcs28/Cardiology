@@ -80,9 +80,18 @@ def _load_model(model_id: str):
 
 # ── ECG preprocessing (matches cardioai_backend.py exactly) ──
 def _load_ecg(hea_path: str, dat_path: str):
-    tmp  = tempfile.mkdtemp()
+    tmp = tempfile.mkdtemp()
     try:
-        base = os.path.splitext(os.path.basename(hea_path))[0]
+        # Read the record name from the first token of the .hea file's first line
+        # e.g. "15618 12 500 5000" → record name is "15618"
+        # This must match the filenames we copy into the temp dir, otherwise
+        # wfdb.rdsamp will look for "<record_name>.dat" and fail with Errno 2.
+        with open(hea_path, "r") as f:
+            first_line = f.readline().strip()
+        hea_record = first_line.split()[0] if first_line else None
+        # Strip any path separators that might be embedded in the record name
+        base = os.path.basename(hea_record) if hea_record else os.path.splitext(os.path.basename(hea_path))[0]
+
         shutil.copy(hea_path, os.path.join(tmp, base + ".hea"))
         shutil.copy(dat_path, os.path.join(tmp, base + ".dat"))
         signal, fields = wfdb.rdsamp(os.path.join(tmp, base))  # (T, 12)
