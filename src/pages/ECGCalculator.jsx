@@ -80,9 +80,9 @@ const ECG_CLASSES_PDF = [
   { cls: 'STTC', label: 'ST/T-wave Change' },
 ];
 const MODEL_METRICS_PDF = {
-  te:       { sensitivity: '95.8%', specificity: '96.1%', auc: '0.974' },
-  gat:      { sensitivity: '96.5%', specificity: '97.0%', auc: '0.978' },
-  proposed: { sensitivity: '98.2%', specificity: '98.9%', auc: '0.991' },
+  te:       { sensitivity: '0%', specificity: '0%', auc: '90.04%' },
+  gat:      { sensitivity: '0%', specificity: '0%', auc: '88.14%' },
+  proposed: { sensitivity: '0%', specificity: '0%', auc: '90.14%' },
 };
 
 function _mockPDFResult(extracted, pdfFile, modelId, threshold) {
