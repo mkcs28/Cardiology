@@ -49,15 +49,15 @@ CLASS_LABELS = {
 }
 
 MODEL_REGISTRY = {
-    "te":       ("TE Transformer",  "TE_Transformer.pth",  "96.2%"),
-    "gat":      ("GAT Transformer", "GAT_Transformer.pth", "97.1%"),
-    "proposed": ("Proposed Model",  "Proposed.pth",        "98.7%"),
+    "te":       ("TE Transformer",  "TE_Transformer.pth",  "90.24%"),
+    "gat":      ("GAT Transformer", "GAT_Transformer.pth", "88.14%"),
+    "proposed": ("Proposed Model",  "Proposed.pth",        "90.14%"),
 }
 
 MODEL_METRICS = {
-    "te":       {"sensitivity": "95.8%", "specificity": "96.1%", "auc": "0.974"},
-    "gat":      {"sensitivity": "96.5%", "specificity": "97.0%", "auc": "0.978"},
-    "proposed": {"sensitivity": "98.2%", "specificity": "98.9%", "auc": "0.991"},
+    "te":       {"sensitivity": "0%", "specificity": "0%", "auc": "90.24%"},
+    "gat":      {"sensitivity": "0%", "specificity": "0%", "auc": "88.14%"},
+    "proposed": {"sensitivity": "0%", "specificity": "0%", "auc": "90.14%"},
 }
 
 # ── App ───────────────────────────────────────────────────────
