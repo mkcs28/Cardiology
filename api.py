@@ -165,7 +165,9 @@ def ecg_analyze():
         return jsonify({"success": False, "error": f"Unknown model '{model_id}'"}), 400
 
     hea_tmp = tempfile.NamedTemporaryFile(suffix=".hea", delete=False)
+    hea_tmp.close()  # release handle so Flask can write to the path
     dat_tmp = tempfile.NamedTemporaryFile(suffix=".dat", delete=False)
+    dat_tmp.close()  # release handle so Flask can write to the path
     try:
         hea_file.save(hea_tmp.name)
         dat_file.save(dat_tmp.name)
@@ -213,8 +215,11 @@ def ecg_analyze():
         log.exception("ECG analysis failed")
         return jsonify({"success": False, "error": str(e)}), 500
     finally:
-        os.unlink(hea_tmp.name)
-        os.unlink(dat_tmp.name)
+        for _p in (hea_tmp.name, dat_tmp.name):
+            try:
+                os.unlink(_p)
+            except FileNotFoundError:
+                pass
 
 @app.route("/api/ecg/analyze-from-signal", methods=["POST"])
 def ecg_analyze_from_signal():
