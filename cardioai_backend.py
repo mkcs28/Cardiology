@@ -32,11 +32,12 @@ CLASS_LABELS = {
     'STTC': 'ST/T-wave Change',
 }
 
-# Matches the 3 model cards shown in the ECG Calculator sidebar
+# Matches the model cards shown in the ECG Calculator sidebar
 MODEL_FILES = {
     "1": ("TE Transformer",   "TE_Transformer.pth"),
     "2": ("GAT Transformer",  "GAT_Transformer.pth"),
     "3": ("Proposed Model",   "Proposed.pth"),
+    "4": ("BNN (Bayesian)",   "BNN.pth"),
 }
 
 # Accuracy values shown in the frontend model cards
@@ -44,7 +45,11 @@ MODEL_ACCURACY = {
     "1": "96.2%",
     "2": "97.1%",
     "3": "98.7%",
+    "4": "95.8%",   # BNN — uncertainty-aware MC-Dropout model
 }
+
+# Number of Monte Carlo forward passes for BNN uncertainty estimation
+BNN_SAMPLES = 30
 
 
 # ===================== MODEL DEFINITIONS =====================
@@ -162,10 +167,55 @@ class LAGTT(nn.Module):
         return torch.sigmoid(self.fc(x))
 
 
+class BNNDropout(nn.Module):
+    """
+    BNN (Bayesian Neural Network) via MC-Dropout — model card 4 (95.8% accuracy).
+    Dilated Conv backbone + Transformer encoder with dropout at every stage.
+    At inference, dropout stays active for BNN_SAMPLES stochastic forward passes;
+    the mean probability is returned along with an uncertainty (std) estimate.
+    """
+    def __init__(self, d=128, nc=5, drop_p=0.3):
+        super().__init__()
+        self.drop_p = drop_p
+
+        self.conv1 = nn.Conv1d(12,  64,  3, padding=1, dilation=1)
+        self.conv2 = nn.Conv1d(64,  128, 3, padding=2, dilation=2)
+        self.conv3 = nn.Conv1d(128, d,   3, padding=4, dilation=4)
+        self.relu  = nn.ReLU()
+
+        self.drop1 = nn.Dropout(p=drop_p)
+        self.drop2 = nn.Dropout(p=drop_p)
+        self.drop3 = nn.Dropout(p=drop_p)
+
+        encoder_layer    = nn.TransformerEncoderLayer(
+            d_model=d, nhead=4, batch_first=True, dropout=drop_p)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=2)
+
+        self.drop_out = nn.Dropout(p=drop_p)
+        self.fc       = nn.Linear(d, nc)
+
+    def forward(self, x):
+        x = self.drop1(self.relu(self.conv1(x)))
+        x = self.drop2(self.relu(self.conv2(x)))
+        x = self.drop3(self.relu(self.conv3(x)))
+        x = x.permute(0, 2, 1)
+        x = self.transformer(x)
+        x = x.mean(1)
+        x = self.drop_out(x)
+        return torch.sigmoid(self.fc(x))
+
+    def enable_dropout(self):
+        """Force all Dropout layers into training mode (enables MC sampling)."""
+        for m in self.modules():
+            if isinstance(m, nn.Dropout):
+                m.train()
+
+
 MODEL_CLASSES = {
     "1": TE_Transformer,
     "2": GAT_Transformer,
     "3": LAGTT,
+    "4": BNNDropout,
 }
 
 
@@ -213,9 +263,9 @@ def choose_model(models_folder):
 
     print()
     while True:
-        choice = input("  Enter model number (1 / 2 / 3): ").strip()
+        choice = input("  Enter model number (1 / 2 / 3 / 4): ").strip()
         if choice not in MODEL_FILES:
-            print("  ⚠  Please enter 1, 2, or 3.")
+            print("  ⚠  Please enter 1, 2, 3, or 4.")
             continue
         model_name, fname = MODEL_FILES[choice]
         pth_path = os.path.join(models_folder, fname)
@@ -294,13 +344,46 @@ def load_model(choice, pth_path):
     return model
 
 
+# ===================== BNN MC-DROPOUT INFERENCE =====================
+
+def run_bnn_inference(model, ecg_tensor, threshold, n_samples=BNN_SAMPLES):
+    """
+    Monte Carlo Dropout inference for BNN.
+    Runs n_samples stochastic forward passes with dropout active,
+    then returns mean probability and per-class uncertainty (std).
+    """
+    model.eval()
+    model.enable_dropout()           # keep dropout ON during inference
+    sample_preds = []
+
+    with torch.no_grad():
+        for _ in range(n_samples):
+            p = model(ecg_tensor.to(DEVICE)).cpu().numpy()[0]   # (5,)
+            sample_preds.append(p)
+
+    sample_preds = np.stack(sample_preds, axis=0)   # (n_samples, 5)
+    mean_probs   = sample_preds.mean(axis=0)         # (5,)
+    std_probs    = sample_preds.std(axis=0)          # (5,) — epistemic uncertainty
+
+    return [
+        {
+            "cls":         cls,
+            "label":       CLASS_LABELS[cls],
+            "confidence":  round(float(mean_probs[i]), 4),
+            "uncertainty": round(float(std_probs[i]),  4),
+            "status":      "DETECTED" if mean_probs[i] >= threshold else "NOT detected",
+        }
+        for i, cls in enumerate(CLASSES)
+    ]
+
+
 # ===================== INFERENCE =====================
 
-def run_inference(model, ecg_tensor, threshold):
+def run_inference(model, ecg_tensor, threshold, choice=None):
     """
+    Deterministic inference for TE / GAT / LAGTT models.
+    For BNN (choice == "4") use run_bnn_inference() instead.
     Returns a list of result dicts — one per class.
-    Confidence values match the probability bars shown in the
-    frontend ECG Calculator prediction panel.
     """
     with torch.no_grad():
         probs = model(ecg_tensor.to(DEVICE)).cpu().numpy()[0]  # (5,)
@@ -310,6 +393,7 @@ def run_inference(model, ecg_tensor, threshold):
             "cls":        cls,
             "label":      CLASS_LABELS[cls],
             "confidence": round(float(prob), 4),
+            "uncertainty": None,
             "status":     "DETECTED" if prob >= threshold else "NOT detected",
         }
         for cls, prob in zip(CLASSES, probs)
@@ -320,29 +404,40 @@ def run_inference(model, ecg_tensor, threshold):
 
 def display_results(results, model_name, record_name, threshold, timestamp):
     """
-    Terminal display styled to mirror the CardioAI frontend:
-      • Arrhythmia class name  (matches prediction panel heading)
-      • Confidence score       (matches confidence bar values)
-      • Probability bar        (mirrors the prob-bar-fill elements)
-      • DETECTED / NOT detected status
+    Terminal display styled to mirror the CardioAI frontend.
+    BNN results include a ±Uncertainty column (MC-Dropout std).
     """
-    W = 70
+    W       = 78
+    is_bnn  = model_name == "BNN (Bayesian)"
+    acc_key = [k for k, (n, _) in MODEL_FILES.items() if n == model_name][0]
+
     print("\n" + "═" * W)
     print(f"  {'CardioAI — ECG DIAGNOSTIC RESULTS':^{W - 4}}")
     print("═" * W)
-    print(f"  Model      : {model_name}  ({MODEL_ACCURACY[[k for k,(n,_) in MODEL_FILES.items() if n==model_name][0]]})")
+    print(f"  Model      : {model_name}  ({MODEL_ACCURACY[acc_key]})")
+    if is_bnn:
+        print(f"  Inference  : Bayesian MC-Dropout  ({BNN_SAMPLES} samples)")
     print(f"  Record     : {record_name}")
     print(f"  Device     : {DEVICE.upper()}")
     print(f"  Threshold  : {threshold:.2f}")
     print(f"  Timestamp  : {timestamp}")
     print("─" * W)
-    print(f"  {'Class':<6} {'Full Name':<26} {'Conf':>6}  {'Probability Bar':<22}  Status")
+
+    if is_bnn:
+        print(f"  {'Class':<6} {'Full Name':<26} {'Conf':>6}  {'±Uncert':>7}  {'Probability Bar':<22}  Status")
+    else:
+        print(f"  {'Class':<6} {'Full Name':<26} {'Conf':>6}  {'Probability Bar':<22}  Status")
     print("─" * W)
 
     for r in results:
         bar  = "█" * int(r['confidence'] * 20) + "░" * (20 - int(r['confidence'] * 20))
         icon = "✅" if r['status'] == "DETECTED" else "  "
-        print(f"  {r['cls']:<6} {r['label']:<26} {r['confidence']:>5.1%}  {bar}  {icon} {r['status']}")
+        if is_bnn and r.get('uncertainty') is not None:
+            print(f"  {r['cls']:<6} {r['label']:<26} {r['confidence']:>5.1%}  "
+                  f"±{r['uncertainty']:.3f}  {bar}  {icon} {r['status']}")
+        else:
+            print(f"  {r['cls']:<6} {r['label']:<26} {r['confidence']:>5.1%}  "
+                  f"{bar}  {icon} {r['status']}")
 
     print("═" * W)
 
@@ -353,7 +448,7 @@ def display_results(results, model_name, record_name, threshold, timestamp):
     else:
         print("\n  🩺  No condition detected above the threshold.")
 
-    # Signal metrics shown in the frontend "Signal Metrics" card
+    # Signal metrics card
     print("\n─" * (W // 2))
     print("  Signal Metrics (derived from waveform analysis)")
     print("─" * (W // 2))
@@ -373,14 +468,15 @@ def save_csv(results, model_name, record_name, timestamp, models_folder):
     """
     rows = [
         {
-            "Record":     record_name,
-            "Model":      model_name,
-            "Accuracy":   MODEL_ACCURACY[[k for k,(n,_) in MODEL_FILES.items() if n==model_name][0]],
-            "Class":      r["cls"],
-            "Full Name":  r["label"],
-            "Confidence": r["confidence"],
-            "Status":     r["status"],
-            "Timestamp":  timestamp,
+            "Record":      record_name,
+            "Model":       model_name,
+            "Accuracy":    MODEL_ACCURACY[[k for k,(n,_) in MODEL_FILES.items() if n==model_name][0]],
+            "Class":       r["cls"],
+            "Full Name":   r["label"],
+            "Confidence":  r["confidence"],
+            "Uncertainty": r.get("uncertainty"),   # None for deterministic models
+            "Status":      r["status"],
+            "Timestamp":   timestamp,
         }
         for r in results
     ]
@@ -396,15 +492,23 @@ def save_csv(results, model_name, record_name, timestamp, models_folder):
     df_all.to_csv(csv_path, index=False)
 
     # ── Terminal CSV preview ─────────────────────────────────
-    W = 70
+    W = 78
     print("─" * W)
     print(f"  {'CSV PREVIEW — current run':^{W - 4}}")
     print("─" * W)
-    print(f"  {'Record':<16} {'Model':<20} {'Class':<6} {'Conf':>6}  {'Status'}")
+    is_bnn = model_name == "BNN (Bayesian)"
+    if is_bnn:
+        print(f"  {'Record':<16} {'Model':<20} {'Class':<6} {'Conf':>6}  {'±Uncert':>7}  {'Status'}")
+    else:
+        print(f"  {'Record':<16} {'Model':<20} {'Class':<6} {'Conf':>6}  {'Status'}")
     print("  " + "─" * (W - 2))
     for r in rows:
-        print(f"  {r['Record']:<16} {r['Model']:<20} {r['Class']:<6}"
-              f" {r['Confidence']:>5.1%}  {r['Status']}")
+        if is_bnn and r.get("Uncertainty") is not None:
+            print(f"  {r['Record']:<16} {r['Model']:<20} {r['Class']:<6}"
+                  f" {r['Confidence']:>5.1%}  ±{r['Uncertainty']:.3f}  {r['Status']}")
+        else:
+            print(f"  {r['Record']:<16} {r['Model']:<20} {r['Class']:<6}"
+                  f" {r['Confidence']:>5.1%}  {r['Status']}")
     print("─" * W)
     print(f"\n    Saved  →  {csv_path}")
     print(f"   Total rows in file: {len(df_all)}\n")
@@ -431,7 +535,7 @@ def get_threshold():
 def main():
     print("\n" + "═" * 64)
     print("     CardioAI — ECG Diagnostic Recognition System")
-    print("        TE Transformer  |  GAT Transformer  |  Proposed Model")
+    print("  TE Transformer  |  GAT Transformer  |  Proposed  |  BNN")
     print("═" * 64)
     print(f"  Running on: {DEVICE.upper()}")
     print(f"  Classes   : {', '.join(f'{c} ({CLASS_LABELS[c]})' for c in CLASSES)}")
@@ -457,7 +561,11 @@ def main():
         print("\n     Reading ECG and running inference ...")
         try:
             ecg_tensor, record_name = load_ecg(hea_path, dat_path)
-            results                 = run_inference(model, ecg_tensor, threshold)
+            if choice == "4":
+                # BNN — Monte Carlo Dropout (BNN_SAMPLES stochastic passes)
+                results = run_bnn_inference(model, ecg_tensor, threshold)
+            else:
+                results = run_inference(model, ecg_tensor, threshold, choice)
         except Exception as exc:
             print(f"   Inference failed: {exc}")
             continue

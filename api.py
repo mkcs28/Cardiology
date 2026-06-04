@@ -49,16 +49,22 @@ CLASS_LABELS = {
 }
 
 MODEL_REGISTRY = {
-    "te":       ("TE Transformer",  "TE_Transformer.pth",  "90.24%"),
-    "gat":      ("GAT Transformer", "GAT_Transformer.pth", "88.14%"),
-    "proposed": ("Proposed Model",  "Proposed.pth",        "90.14%"),
+    "te":       ("TE Transformer",   "TE_Transformer.pth",  "90.24%"),
+    "gat":      ("GAT Transformer",  "GAT_Transformer.pth", "88.14%"),
+    "proposed": ("Proposed Model",   "Proposed.pth",        "90.14%"),
+    "bnn":      ("BNN (Bayesian)",   "BNN.pth",             "95.80%"),
 }
 
 MODEL_METRICS = {
     "te":       {"sensitivity": "0%", "specificity": "0%", "auc": "90.24%"},
     "gat":      {"sensitivity": "0%", "specificity": "0%", "auc": "88.14%"},
     "proposed": {"sensitivity": "0%", "specificity": "0%", "auc": "90.14%"},
+    "bnn":      {"sensitivity": "0%", "specificity": "0%", "auc": "95.80%",
+                 "inference": "MC-Dropout", "samples": BNN_SAMPLES},
 }
+
+# Number of MC-Dropout stochastic forward passes for BNN
+BNN_SAMPLES = 30
 
 # ── App ───────────────────────────────────────────────────────
 app   = Flask(__name__)
@@ -77,6 +83,78 @@ def _load_model(model_id: str):
             raise FileNotFoundError(f"{fname} not found in {MODELS_DIR}")
         ni.load_model(model_id, path)
         log.info(f"Loaded {model_id} via numpy_inference (no PyTorch)")
+
+
+def _bnn_mc_infer(signal: np.ndarray, n_samples: int = BNN_SAMPLES) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Monte Carlo Dropout inference for the BNN model.
+    Uses PyTorch so that dropout layers can be toggled at inference time.
+
+    Parameters
+    ----------
+    signal   : np.ndarray  (12, T) — float32, already normalised
+    n_samples: int — number of stochastic forward passes
+
+    Returns
+    -------
+    mean_probs : np.ndarray (5,)  — mean probability across MC samples
+    std_probs  : np.ndarray (5,)  — epistemic uncertainty (std across samples)
+    """
+    import torch
+    import torch.nn as nn
+
+    # Lazy import the BNNDropout architecture — mirrors cardioai_backend.py exactly
+    class _BNNDropout(nn.Module):
+        def __init__(self, d=128, nc=5, drop_p=0.3):
+            super().__init__()
+            self.drop_p = drop_p
+            self.conv1 = nn.Conv1d(12,  64,  3, padding=1, dilation=1)
+            self.conv2 = nn.Conv1d(64,  128, 3, padding=2, dilation=2)
+            self.conv3 = nn.Conv1d(128, d,   3, padding=4, dilation=4)
+            self.relu  = nn.ReLU()
+            self.drop1 = nn.Dropout(p=drop_p)
+            self.drop2 = nn.Dropout(p=drop_p)
+            self.drop3 = nn.Dropout(p=drop_p)
+            enc_layer        = nn.TransformerEncoderLayer(
+                d_model=d, nhead=4, batch_first=True, dropout=drop_p)
+            self.transformer = nn.TransformerEncoder(enc_layer, num_layers=2)
+            self.drop_out    = nn.Dropout(p=drop_p)
+            self.fc          = nn.Linear(d, nc)
+
+        def forward(self, x):
+            x = self.drop1(self.relu(self.conv1(x)))
+            x = self.drop2(self.relu(self.conv2(x)))
+            x = self.drop3(self.relu(self.conv3(x)))
+            x = x.permute(0, 2, 1)
+            x = self.transformer(x)
+            x = x.mean(1)
+            x = self.drop_out(x)
+            return torch.sigmoid(self.fc(x))
+
+        def enable_dropout(self):
+            for m in self.modules():
+                if isinstance(m, nn.Dropout):
+                    m.train()
+
+    # Build model and load weights (weights are already in ni._cache as numpy)
+    bnn_torch = _BNNDropout(nc=5)
+    state_np  = ni._cache["bnn"]
+
+    # Convert numpy weight dict back to torch state_dict
+    state_torch = {k: torch.tensor(v) for k, v in state_np.items()}
+    bnn_torch.load_state_dict(state_torch, strict=False)
+    bnn_torch.eval()
+    bnn_torch.enable_dropout()    # MC-Dropout: keep dropout active during inference
+
+    x_tensor = torch.tensor(signal[np.newaxis], dtype=torch.float32)  # (1, 12, T)
+    samples  = []
+    with torch.no_grad():
+        for _ in range(n_samples):
+            p = bnn_torch(x_tensor).cpu().numpy()[0]   # (5,)
+            samples.append(p)
+
+    samples = np.stack(samples, axis=0)   # (n_samples, 5)
+    return samples.mean(axis=0), samples.std(axis=0)
 
 # ── ECG preprocessing (matches cardioai_backend.py exactly) ──
 def _load_ecg(hea_path: str, dat_path: str):
@@ -183,13 +261,20 @@ def ecg_analyze():
 
         tensor, record_name, signal, fields = _load_ecg(hea_tmp.name, dat_tmp.name)
         _load_model(model_id)
-        probs = ni.infer(model_id, tensor)   # tensor is already (12, T) numpy array
+
+        # ── BNN: Monte Carlo Dropout; all others: deterministic numpy forward ──
+        if model_id == "bnn":
+            probs, uncert = _bnn_mc_infer(tensor, n_samples=BNN_SAMPLES)
+        else:
+            probs  = ni.infer(model_id, tensor)
+            uncert = None
 
         pcts      = [float(x) for x in probs * 100]
         detected  = [CLASSES[i] for i, p in enumerate(probs) if p > threshold]
         all_preds = sorted(
             [{"cls": c, "label": CLASS_LABELS[c],
-              "pct": round(pcts[i], 1), "detected": bool(probs[i] > threshold)}
+              "pct": round(pcts[i], 1), "detected": bool(probs[i] > threshold),
+              "uncertainty": round(float(uncert[i]), 4) if uncert is not None else None}
              for i, c in enumerate(CLASSES)],
             key=lambda x: -x["pct"],
         )
@@ -215,6 +300,8 @@ def ecg_analyze():
             "waveformData":  _waveform_to_polylines(signal),
             "signalMetrics": _signal_metrics(fields),
             "metrics":       MODEL_METRICS.get(model_id, {}),
+            "bnn":           model_id == "bnn",
+            "bnnSamples":    BNN_SAMPLES if model_id == "bnn" else None,
             "timestamp":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         })
 
@@ -315,13 +402,19 @@ def ecg_analyze_from_signal():
         dat_path = rec_path + ".dat"
         tensor, record_name, signal, fields = _load_ecg(hea_path, dat_path)
         _load_model(model_id)
-        probs = ni.infer(model_id, tensor)   # (12, T) numpy → (5,) probabilities
+
+        if model_id == "bnn":
+            probs, uncert = _bnn_mc_infer(tensor, n_samples=BNN_SAMPLES)
+        else:
+            probs  = ni.infer(model_id, tensor)
+            uncert = None
 
         pcts     = [float(x) for x in probs * 100]
         detected = [CLASSES[i] for i, p in enumerate(probs) if p > threshold]
         all_preds = sorted(
             [{"cls": c, "label": CLASS_LABELS[c],
-              "pct": round(pcts[i], 1), "detected": bool(probs[i] > threshold)}
+              "pct": round(pcts[i], 1), "detected": bool(probs[i] > threshold),
+              "uncertainty": round(float(uncert[i]), 4) if uncert is not None else None}
              for i, c in enumerate(CLASSES)],
             key=lambda x: -x["pct"],
         )
@@ -348,6 +441,8 @@ def ecg_analyze_from_signal():
             "waveformData":  _waveform_to_polylines(signal),
             "signalMetrics": _signal_metrics(fields),
             "metrics":       MODEL_METRICS.get(model_id, {}),
+            "bnn":           model_id == "bnn",
+            "bnnSamples":    BNN_SAMPLES if model_id == "bnn" else None,
             "timestamp":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "source":        "pdf",
         })
