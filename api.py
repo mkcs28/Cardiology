@@ -171,6 +171,23 @@ def _load_ecg(hea_path: str, dat_path: str):
         signal, fields = wfdb.rdsamp(os.path.join(tmp, base))  # (T, 12)
         signal = np.nan_to_num(signal, nan=0.0)                  # replace NaN channels
         signal = signal.T                                        # (12, T)
+
+        # Downsample to 100 Hz before model inference.
+        # PTB-XL (training dataset) standard low-res rate is 100 Hz.
+        # PDF signals come in at 500 Hz → 5000 samples for a 10s ECG.
+        # At 500 Hz: (5000×5000) attention = 95 MB × 10 BNN passes = 950 MB → OOM.
+        # At 100 Hz: (1000×1000) attention = 3.8 MB × 10 BNN passes = 38 MB  → safe.
+        # Downsampling to 100 Hz preserves full 10s clinical window with no
+        # loss of diagnostically relevant ECG morphology (QRS, P, T waves).
+        TARGET_FS_MODEL = 100
+        native_fs = fields.get("fs", 500)
+        if native_fs > TARGET_FS_MODEL:
+            from scipy.signal import resample_poly as _rp
+            from math import gcd as _gcd
+            g = _gcd(int(native_fs), TARGET_FS_MODEL)
+            up, down = TARGET_FS_MODEL // g, int(native_fs) // g
+            signal = _rp(signal, up, down, axis=1).astype(np.float32)
+
         signal = (signal - signal.mean()) / (signal.std() + 1e-8)
         return signal.astype(np.float32), base, signal, fields
     finally:
