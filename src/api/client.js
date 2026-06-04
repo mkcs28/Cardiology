@@ -62,10 +62,15 @@ async function _json(res) {
   return data;
 }
 
-// ── Check backend availability (always fresh — no stale caching) ──
+// ── Check backend availability — short timeout, no retries ──────────────
+// Used only for non-critical status checks (navbar badge, model status).
+// analyzeECG does NOT gate on this — see below.
 async function _isBackendUp() {
   try {
-    const res = await _fetchWithRetry(`${BASE}/health`);
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), 5000); // 5s only
+    const res = await fetch(`${BASE}/health`, { signal: controller.signal });
+    clearTimeout(id);
     return res.ok;
   } catch {
     return false;
@@ -85,29 +90,35 @@ export async function fetchHealth() {
 }
 
 export async function fetchModelsStatus() {
-  if (await _isBackendUp()) {
+  try {
     const res = await _fetchWithRetry(`${BASE}/models/status`);
     return _json(res);
+  } catch {
+    return mockModelsStatus();
   }
-  return mockModelsStatus();
 }
 
 export async function loadModel(modelId) {
-  if (await _isBackendUp()) {
+  try {
     const res = await _fetchWithRetry(`${BASE}/models/load`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ modelId }),
     });
     return _json(res);
+  } catch {
+    return { success: true, modelId };
   }
-  return { success: true, modelId };
 }
 
 // ── ECG Analysis ──────────────────────────────────────────────
 
 export async function analyzeECG(heaFile, datFile, modelId, threshold = 0.5) {
-  if (await _isBackendUp()) {
+  // Always attempt the real backend — never gate on _isBackendUp here.
+  // _fetchWithRetry handles cold-starts (retries on timeout/network error).
+  // Only fall back to mock when the backend is genuinely unreachable after
+  // all retries (i.e. __NETWORK__ exhausted).
+  try {
     const form = new FormData();
     form.append("heaFile",   heaFile);
     form.append("datFile",   datFile);
@@ -118,39 +129,50 @@ export async function analyzeECG(heaFile, datFile, modelId, threshold = 0.5) {
       body: form,
     });
     return _json(res);
+  } catch (err) {
+    const msg = err?.message ?? "";
+    // Only fall to mock if backend is completely unreachable (not just slow)
+    if (msg.includes("Cannot reach the backend")) {
+      await _delay(1800);
+      return mockECGResult(heaFile.name, modelId, threshold);
+    }
+    throw err; // surface timeout / backend errors directly
   }
-  // Simulate network latency
-  await _delay(1800);
-  return mockECGResult(heaFile.name, modelId, threshold);
 }
 
 // ── Cardio Risk ───────────────────────────────────────────────
 
 export async function predictCardioRisk(formData) {
-  if (await _isBackendUp()) {
+  try {
     const res = await _fetchWithRetry(`${BASE}/cardio/predict`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(formData),
     });
     return _json(res);
+  } catch (err) {
+    const msg = err?.message ?? "";
+    if (msg.includes("Cannot reach the backend")) {
+      await _delay(1600);
+      return mockCardioResult(formData);
+    }
+    throw err;
   }
-  await _delay(1600);
-  return mockCardioResult(formData);
 }
 
 // ── Results history ───────────────────────────────────────────
 
 export async function fetchHistory({ modelId, record, limit = 50 } = {}) {
-  if (await _isBackendUp()) {
+  try {
     const params = new URLSearchParams();
     if (modelId) params.set("modelId", modelId);
     if (record)  params.set("record",  record);
     params.set("limit", String(limit));
     const res = await _fetchWithRetry(`${BASE}/results/history?${params}`);
     return _json(res);
+  } catch {
+    return { success: true, results: [] };
   }
-  return { success: true, results: [] };
 }
 
 // ═══════════════════════════════════════════════════════════════
