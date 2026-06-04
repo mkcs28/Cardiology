@@ -73,10 +73,22 @@ _lock = threading.Lock()
 
 # ── Model loader (numpy — no PyTorch) ────────────────────────
 def _load_model(model_id: str):
-    """Load weights into numpy_inference cache (idempotent)."""
+    """Load weights into numpy_inference cache (idempotent).
+
+    On Render free tier (512 MB RAM) we can only safely hold ONE model
+    in memory at a time.  Evict any other cached model before loading a
+    new one so we never OOM-crash during a request.
+    """
     with _lock:
         if model_id in ni._cache:
-            return  # already loaded
+            return  # already loaded — nothing to do
+
+        # Evict every OTHER cached model to free RAM before loading
+        for cached_id in list(ni._cache.keys()):
+            if cached_id != model_id:
+                del ni._cache[cached_id]
+                log.info(f"Evicted {cached_id} from cache to free RAM")
+
         _, fname, _ = MODEL_REGISTRY[model_id]
         path = os.path.join(MODELS_DIR, fname)
         if not os.path.exists(path):
@@ -633,23 +645,19 @@ def ecg_claude_vision():
 
 
 def _prewarm_models():
-    """Load only the default model ('proposed') at startup.
+    """Skip pre-loading models at startup on Render free tier.
 
-    Why only one model:
-      - Render free tier has 512 MB RAM.  Loading all 4 models up-front
-        costs ~60 MB extra and has caused OOM-related SIGTERM crashes.
-      - The other three models load lazily on first use (still < 100 ms
-        extra latency because numpy_inference caches them after that).
-      - A 5-second delay lets gunicorn pass the health check before the
-        worker is busy reading the .pth file off disk.
+    Each model is ~5 MB on disk but expands to ~80-120 MB in RAM as numpy
+    arrays.  Pre-loading 'proposed' AND then loading 'bnn' on the first
+    request caused the instance to exceed 512 MB and get SIGTERM'd.
+
+    Models now load lazily on the first request that needs them.
+    The _load_model() function evicts the previous model from cache
+    before loading a new one, so RAM never holds more than one at a time.
     """
     import time
-    time.sleep(5)   # let /api/health respond first → Render marks instance healthy
-    try:
-        _load_model("proposed")
-        log.info("Pre-warmed default model: proposed")
-    except Exception as e:
-        log.warning(f"Pre-warm skipped: {e}")
+    time.sleep(5)   # let gunicorn pass the health check first
+    log.info("Pre-warm skipped — models load lazily on first request (saves ~100 MB RAM)")
 
 # Start pre-warm for both `gunicorn api:app` and `python api.py`
 threading.Thread(target=_prewarm_models, daemon=True, name="prewarm").start()
