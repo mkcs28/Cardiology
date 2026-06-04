@@ -9,7 +9,7 @@
 #
 #  Deploy to Render:
 #    Build : pip install -r requirements.txt
-#    Start : gunicorn api:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+#    Start : gunicorn api:app --bind 0.0.0.0:$PORT --workers 1 --timeout 300 --preload-app
 # ============================================================
 
 import os, re, shutil, tempfile, threading, logging, json, sys
@@ -614,18 +614,23 @@ def ecg_claude_vision():
 
 
 def _prewarm_models():
-    """Load all model weights into the numpy_inference cache.
-    Delayed by 5 s so gunicorn can pass the Render health check before
-    the worker is busy reading ~20 MB of .pth files off disk.
-    Runs in a daemon thread — never blocks request handling."""
+    """Load only the default model ('proposed') at startup.
+
+    Why only one model:
+      - Render free tier has 512 MB RAM.  Loading all 4 models up-front
+        costs ~60 MB extra and has caused OOM-related SIGTERM crashes.
+      - The other three models load lazily on first use (still < 100 ms
+        extra latency because numpy_inference caches them after that).
+      - A 5-second delay lets gunicorn pass the health check before the
+        worker is busy reading the .pth file off disk.
+    """
     import time
-    time.sleep(5)   # let /api/health respond first so Render marks instance healthy
-    for mid in MODEL_REGISTRY:
-        try:
-            _load_model(mid)
-            log.info(f"Pre-warmed model: {mid}")
-        except Exception as e:
-            log.warning(f"Pre-warm skipped for {mid}: {e}")
+    time.sleep(5)   # let /api/health respond first → Render marks instance healthy
+    try:
+        _load_model("proposed")
+        log.info("Pre-warmed default model: proposed")
+    except Exception as e:
+        log.warning(f"Pre-warm skipped: {e}")
 
 # Start pre-warm for both `gunicorn api:app` and `python api.py`
 threading.Thread(target=_prewarm_models, daemon=True, name="prewarm").start()
