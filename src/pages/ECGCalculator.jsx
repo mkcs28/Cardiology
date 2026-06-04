@@ -671,6 +671,9 @@ export default function ECGCalculator() {
                   <p className="prediction-placeholder-text">
                     {inputMode === 'pdf' ? `Extracting ECG signals (OpenCV) → ${activeModel?.name} classifying…` : `Running ${activeModel?.name} on backend…`}
                   </p>
+                  <p style={{ fontSize: '0.78rem', color: 'var(--text-muted, #888)', marginTop: '6px' }}>
+                    If the backend is cold-starting, this retries automatically (up to 3×).
+                  </p>
                 </div>
               )}
 
