@@ -48,8 +48,11 @@ CLASS_LABELS = {
     "STTC": "ST/T-wave Change",
 }
 
-# Number of MC-Dropout stochastic forward passes for BNN
-BNN_SAMPLES = 30
+# Number of MC-Dropout stochastic forward passes for BNN.
+# Render free tier has 512 MB RAM — 30 passes causes OOM SIGTERM.
+# 10 passes gives reliable uncertainty estimates within the memory budget.
+# Upgrade to a paid Render instance to restore 30 passes.
+BNN_SAMPLES = 10
 
 MODEL_REGISTRY = {
     "te":       ("TE Transformer",   "TE_Transformer.pth",  "90.24%"),
@@ -137,8 +140,17 @@ def _bnn_mc_infer(signal: np.ndarray, n_samples: int = BNN_SAMPLES) -> tuple:
         pooled = _dropout(ht.mean(0), drop_p)
         return ni._sigmoid(pooled @ W["fc.weight"].T + W["fc.bias"])
 
-    samples = np.stack([_forward_with_dropout() for _ in range(n_samples)], axis=0)
-    return samples.mean(axis=0), samples.std(axis=0)
+    # Welford online algorithm — accumulates mean + variance in O(1) RAM
+    # instead of np.stack() which allocates n_samples arrays simultaneously.
+    mean = np.zeros(5, dtype=np.float64)
+    M2   = np.zeros(5, dtype=np.float64)
+    for k in range(1, n_samples + 1):
+        x_k   = _forward_with_dropout().astype(np.float64)
+        delta  = x_k - mean
+        mean  += delta / k
+        M2    += delta * (x_k - mean)
+    std = np.sqrt(M2 / max(n_samples - 1, 1))
+    return mean.astype(np.float32), std.astype(np.float32)
 
 # ── ECG preprocessing (matches cardioai_backend.py exactly) ──
 def _load_ecg(hea_path: str, dat_path: str):
