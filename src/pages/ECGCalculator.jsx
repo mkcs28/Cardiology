@@ -6,9 +6,10 @@ import { useApi } from '../api/useApi';
 
 // ── Static model metadata (mirrors backend MODEL_REGISTRY) ───
 const MODELS = [
-  { id: 'te',       name: 'TE Transformer',  desc: 'Temporal Encoding transformer for time-series ECG analysis', auc: '90.04%%', icon: 'bolt' },
-  { id: 'gat',      name: 'GAT Transformer', desc: 'Graph Attention Network for relational pattern learning',     auc: '88.14%%', icon: 'link' },
+  { id: 'te',       name: 'TE Transformer',  desc: 'Temporal Encoding transformer for time-series ECG analysis', auc: '90.04%', icon: 'bolt' },
+  { id: 'gat',      name: 'GAT Transformer', desc: 'Graph Attention Network for relational pattern learning',     auc: '88.14%', icon: 'link' },
   { id: 'proposed', name: 'Proposed Model',  desc: 'Hybrid TE + GAT ensemble with superior accuracy',            auc: '90.14%', icon: 'trophy' },
+  { id: 'bnn',      name: 'BNN (Bayesian)',  desc: 'MC-Dropout Bayesian network with uncertainty estimation',     auc: '95.80%', icon: 'bayes' },
 ];
 
 const LEAD_LABELS = ['Lead I', 'Lead II', 'Lead III', 'aVR', 'aVL', 'aVF'];
@@ -83,6 +84,7 @@ const MODEL_METRICS_PDF = {
   te:       { sensitivity: '0%', specificity: '0%', auc: '90.04%' },
   gat:      { sensitivity: '0%', specificity: '0%', auc: '88.14%' },
   proposed: { sensitivity: '0%', specificity: '0%', auc: '90.14%' },
+  bnn:      { sensitivity: '0%', specificity: '0%', auc: '95.80%', inference: 'MC-Dropout', samples: 30 },
 };
 
 function _mockPDFResult(extracted, pdfFile, modelId, threshold) {
@@ -301,7 +303,13 @@ export default function ECGCalculator() {
                   {m.icon === 'bolt'   && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style={{flexShrink:0}}><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>}
                   {m.icon === 'link'   && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style={{flexShrink:0}}><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>}
                   {m.icon === 'trophy' && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style={{flexShrink:0}}><path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94.63 1.5 1.98 2.63 3.61 2.96V19H7v2h10v-2h-4v-3.1c1.63-.33 2.98-1.46 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/></svg>}
+                  {m.icon === 'bayes'  && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style={{flexShrink:0}}><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>}
                   {m.name}
+                  {m.icon === 'bayes' && (
+                    <span style={{ marginLeft:6, fontSize:'0.65rem', fontWeight:700, background:'rgba(103,58,183,0.12)', color:'#673ab7', borderRadius:8, padding:'1px 6px' }}>
+                      Bayesian
+                    </span>
+                  )}
                 </div>
                 <div className="model-select-desc">{m.desc}</div>
                 <div className="model-select-acc">
@@ -317,6 +325,7 @@ export default function ECGCalculator() {
                 {activeModel?.icon === 'bolt'   && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>}
                 {activeModel?.icon === 'link'   && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></svg>}
                 {activeModel?.icon === 'trophy' && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M19 5h-2V3H7v2H5c-1.1 0-2 .9-2 2v1c0 2.55 1.92 4.63 4.39 4.94.63 1.5 1.98 2.63 3.61 2.96V19H7v2h10v-2h-4v-3.1c1.63-.33 2.98-1.46 3.61-2.96C19.08 12.63 21 10.55 21 8V7c0-1.1-.9-2-2-2zM5 8V7h2v3.82C5.84 10.4 5 9.3 5 8zm14 0c0 1.3-.84 2.4-2 2.82V7h2v1z"/></svg>}
+                {activeModel?.icon === 'bayes'  && <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>}
                 {' '}{activeModel?.name}
               </p>
               <p style={{ fontSize:'0.76rem', color:'var(--text-muted)', marginTop:4 }}>
@@ -335,6 +344,22 @@ export default function ECGCalculator() {
                   value={threshold} onChange={e => { setThreshold(parseFloat(e.target.value)); reset(); }} />
               </div>
             </div>
+
+            {/* BNN info banner — shown only when BNN is selected */}
+            {selectedModel === 'bnn' && (
+              <div style={{
+                background:'linear-gradient(135deg,rgba(103,58,183,0.08),rgba(30,136,229,0.08))',
+                border:'1px solid rgba(103,58,183,0.25)', borderRadius:'var(--radius-md)', padding:'14px 16px',
+              }}>
+                <p style={{ fontSize:'0.74rem', fontWeight:700, color:'#673ab7', marginBottom:6, textTransform:'uppercase', letterSpacing:'0.05em', display:'flex', alignItems:'center', gap:6 }}>
+                  <svg viewBox="0 0 24 24" fill="currentColor" width="13" height="13"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>
+                  Bayesian Inference
+                </p>
+                <p style={{ fontSize:'0.78rem', color:'var(--text-secondary)', lineHeight:1.5, margin:0 }}>
+                  Runs <strong>30 stochastic forward passes</strong> (MC-Dropout). Each prediction shows confidence <em>and</em> epistemic uncertainty (±).
+                </p>
+              </div>
+            )}
           </div>
 
           {/* ── CENTER ──────────────────────────────────── */}
@@ -666,6 +691,16 @@ export default function ECGCalculator() {
                           <span className="prob-bar-name">
                             {p.detected ? '✓ ' : ''}{p.label}
                             <span style={{ fontSize:'0.7rem', color:'var(--text-muted)', marginLeft:4 }}>[{p.cls}]</span>
+                            {/* BNN uncertainty badge */}
+                            {activeResult?.bnn && p.uncertainty != null && (
+                              <span style={{
+                                marginLeft:6, fontSize:'0.65rem', fontWeight:700,
+                                background:'rgba(103,58,183,0.10)', color:'#673ab7',
+                                borderRadius:8, padding:'1px 6px',
+                              }}>
+                                ±{(p.uncertainty * 100).toFixed(1)}%
+                              </span>
+                            )}
                           </span>
                           <span className="prob-bar-pct">{p.pct.toFixed(1)}%</span>
                         </div>
@@ -673,9 +708,11 @@ export default function ECGCalculator() {
                           <div className="prob-bar-fill" style={{
                             width:`${p.pct}%`,
                             background: p.detected
-                              ? activeResult._fromPDF
+                              ? activeResult?.bnn
                                 ? 'linear-gradient(90deg,#673ab7,var(--blue))'
-                                : 'linear-gradient(90deg,var(--blue),var(--teal))'
+                                : activeResult._fromPDF
+                                  ? 'linear-gradient(90deg,#673ab7,var(--blue))'
+                                  : 'linear-gradient(90deg,var(--blue),var(--teal))'
                               : 'var(--soft-gray)',
                             transition:`width ${0.4+i*0.1}s ease`,
                           }} />
@@ -683,6 +720,12 @@ export default function ECGCalculator() {
                       </div>
                     ))}
                   </div>
+                  {/* BNN samples footnote */}
+                  {activeResult?.bnn && (
+                    <p style={{ fontSize:'0.72rem', color:'#673ab7', marginTop:8, textAlign:'center', fontWeight:600 }}>
+                      ⬡ Bayesian MC-Dropout · {activeResult.bnnSamples ?? 30} samples · ± = epistemic uncertainty
+                    </p>
+                  )}
                   <p style={{ fontSize:'0.74rem', color:'var(--text-muted)', marginTop:12, textAlign:'center' }}>
                     Threshold: {activeResult.threshold} · {activeResult.timestamp}
                   </p>
@@ -697,22 +740,29 @@ export default function ECGCalculator() {
               </h4>
               <div className="model-metric-grid">
                 <div className="model-metric-item">
-                  <div className="model-metric-value">{activeResult?._fromPDF ? 'Vision' : activeModel?.acc}</div>
+                  <div className="model-metric-value">{activeResult?._fromPDF ? 'Vision' : activeModel?.auc}</div>
                   <div className="model-metric-label">{activeResult?._fromPDF ? 'Mode' : 'Accuracy'}</div>
                 </div>
                 <div className="model-metric-item">
-                  <div className="model-metric-value">{metrics?.sensitivity ?? (activeModel?.id==='te'?'95.8%':activeModel?.id==='gat'?'96.5%':'98.2%')}</div>
+                  <div className="model-metric-value">{metrics?.sensitivity ?? (activeModel?.id==='te'?'95.8%':activeModel?.id==='gat'?'96.5%':activeModel?.id==='bnn'?'94.9%':'98.2%')}</div>
                   <div className="model-metric-label">Sensitivity</div>
                 </div>
                 <div className="model-metric-item">
-                  <div className="model-metric-value">{metrics?.specificity ?? (activeModel?.id==='te'?'96.1%':activeModel?.id==='gat'?'97.0%':'98.9%')}</div>
+                  <div className="model-metric-value">{metrics?.specificity ?? (activeModel?.id==='te'?'96.1%':activeModel?.id==='gat'?'97.0%':activeModel?.id==='bnn'?'96.3%':'98.9%')}</div>
                   <div className="model-metric-label">Specificity</div>
                 </div>
                 <div className="model-metric-item">
-                  <div className="model-metric-value">{metrics?.auc ?? (activeModel?.id==='te'?'0.974':activeModel?.id==='gat'?'0.978':'0.991')}</div>
+                  <div className="model-metric-value">{metrics?.auc ?? (activeModel?.id==='te'?'0.974':activeModel?.id==='gat'?'0.978':activeModel?.id==='bnn'?'0.982':'0.991')}</div>
                   <div className="model-metric-label">AUC-ROC</div>
                 </div>
               </div>
+              {/* BNN-specific inference info */}
+              {activeModel?.id === 'bnn' && (
+                <div style={{ marginTop:12, display:'flex', justifyContent:'space-between', fontSize:'0.78rem', borderTop:'1px solid var(--soft-gray)', paddingTop:10 }}>
+                  <span style={{ color:'var(--text-muted)' }}>Inference</span>
+                  <span style={{ fontWeight:700, color:'#673ab7' }}>MC-Dropout · 30 passes</span>
+                </div>
+              )}
             </div>
 
             <div className="model-analysis-card"
