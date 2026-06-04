@@ -100,7 +100,7 @@ const MODEL_METRICS_PDF = {
   te:       { sensitivity: '0%', specificity: '0%', auc: '90.04%' },
   gat:      { sensitivity: '0%', specificity: '0%', auc: '88.14%' },
   proposed: { sensitivity: '0%', specificity: '0%', auc: '90.14%' },
-  bnn:      { sensitivity: '0%', specificity: '0%', auc: '95.80%', inference: 'MC-Dropout', samples: 30 },
+  bnn:      { sensitivity: '0%', specificity: '0%', auc: '95.80%', inference: 'MC-Dropout', samples: 10 },
 };
 
 function _mockPDFResult(extracted, pdfFile, modelId, threshold) {
@@ -391,7 +391,7 @@ export default function ECGCalculator() {
                   Bayesian Inference
                 </p>
                 <p style={{ fontSize:'0.78rem', color:'var(--text-secondary)', lineHeight:1.5, margin:0 }}>
-                  Runs <strong>30 stochastic forward passes</strong> (MC-Dropout). Each prediction shows confidence <em>and</em> epistemic uncertainty (±).
+                  Runs <strong>10 stochastic forward passes</strong> (MC-Dropout). Each prediction shows confidence <em>and</em> epistemic uncertainty (±).
                 </p>
               </div>
             )}
@@ -761,7 +761,7 @@ export default function ECGCalculator() {
                   {/* BNN samples footnote */}
                   {activeResult?.bnn && (
                     <p style={{ fontSize:'0.72rem', color:'#673ab7', marginTop:8, textAlign:'center', fontWeight:600 }}>
-                      ⬡ Bayesian MC-Dropout · {activeResult.bnnSamples ?? 30} samples · ± = epistemic uncertainty
+                      ⬡ Bayesian MC-Dropout · {activeResult.bnnSamples ?? 10} samples · ± = epistemic uncertainty
                     </p>
                   )}
                   <p style={{ fontSize:'0.74rem', color:'var(--text-muted)', marginTop:12, textAlign:'center' }}>
@@ -798,7 +798,7 @@ export default function ECGCalculator() {
               {activeModel?.id === 'bnn' && (
                 <div style={{ marginTop:12, display:'flex', justifyContent:'space-between', fontSize:'0.78rem', borderTop:'1px solid var(--soft-gray)', paddingTop:10 }}>
                   <span style={{ color:'var(--text-muted)' }}>Inference</span>
-                  <span style={{ fontWeight:700, color:'#673ab7' }}>MC-Dropout · 30 passes</span>
+                  <span style={{ fontWeight:700, color:'#673ab7' }}>MC-Dropout · 10 passes</span>
                 </div>
               )}
             </div>
