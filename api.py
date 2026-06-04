@@ -85,10 +85,10 @@ def _load_model(model_id: str):
         log.info(f"Loaded {model_id} via numpy_inference (no PyTorch)")
 
 
-def _bnn_mc_infer(signal: np.ndarray, n_samples: int = BNN_SAMPLES) -> tuple[np.ndarray, np.ndarray]:
+def _bnn_mc_infer(signal: np.ndarray, n_samples: int = BNN_SAMPLES) -> tuple:
     """
-    Monte Carlo Dropout inference for the BNN model.
-    Uses PyTorch so that dropout layers can be toggled at inference time.
+    Pure-NumPy Monte Carlo Dropout inference for the BNN model.
+    No PyTorch required — dropout is applied manually during each forward pass.
 
     Parameters
     ----------
@@ -100,60 +100,32 @@ def _bnn_mc_infer(signal: np.ndarray, n_samples: int = BNN_SAMPLES) -> tuple[np.
     mean_probs : np.ndarray (5,)  — mean probability across MC samples
     std_probs  : np.ndarray (5,)  — epistemic uncertainty (std across samples)
     """
-    import torch
-    import torch.nn as nn
+    W = ni._cache["bnn"]
+    x = signal.astype(np.float32)
+    drop_p = 0.3
 
-    # Lazy import the BNNDropout architecture — mirrors cardioai_backend.py exactly
-    class _BNNDropout(nn.Module):
-        def __init__(self, d=128, nc=5, drop_p=0.3):
-            super().__init__()
-            self.drop_p = drop_p
-            self.conv1 = nn.Conv1d(12,  64,  3, padding=1, dilation=1)
-            self.conv2 = nn.Conv1d(64,  128, 3, padding=2, dilation=2)
-            self.conv3 = nn.Conv1d(128, d,   3, padding=4, dilation=4)
-            self.relu  = nn.ReLU()
-            self.drop1 = nn.Dropout(p=drop_p)
-            self.drop2 = nn.Dropout(p=drop_p)
-            self.drop3 = nn.Dropout(p=drop_p)
-            enc_layer        = nn.TransformerEncoderLayer(
-                d_model=d, nhead=4, batch_first=True, dropout=drop_p)
-            self.transformer = nn.TransformerEncoder(enc_layer, num_layers=2)
-            self.drop_out    = nn.Dropout(p=drop_p)
-            self.fc          = nn.Linear(d, nc)
+    def _dropout(arr, p):
+        """Apply inverted dropout (train-mode scaling) in NumPy."""
+        mask = (np.random.rand(*arr.shape) > p).astype(np.float32)
+        return arr * mask / (1.0 - p)
 
-        def forward(self, x):
-            x = self.drop1(self.relu(self.conv1(x)))
-            x = self.drop2(self.relu(self.conv2(x)))
-            x = self.drop3(self.relu(self.conv3(x)))
-            x = x.permute(0, 2, 1)
-            x = self.transformer(x)
-            x = x.mean(1)
-            x = self.drop_out(x)
-            return torch.sigmoid(self.fc(x))
+    def _forward_with_dropout():
+        # Conv backbone with dropout after each layer
+        h = ni._relu(ni._dilated_conv1d(x, W["conv1.weight"], W["conv1.bias"], padding=1, dilation=1))
+        h = _dropout(h, drop_p)
+        h = ni._relu(ni._dilated_conv1d(h, W["conv2.weight"], W["conv2.bias"], padding=2, dilation=2))
+        h = _dropout(h, drop_p)
+        h = ni._relu(ni._dilated_conv1d(h, W["conv3.weight"], W["conv3.bias"], padding=4, dilation=4))
+        h = _dropout(h, drop_p)
+        # Transformer encoder (2 layers)
+        ht = h.T  # (T, 128)
+        for i in range(2):
+            ht = ni._transformer_layer(ht, f"transformer.layers.{i}.", W)
+        # Pool + dropout + fc
+        pooled = _dropout(ht.mean(0), drop_p)
+        return ni._sigmoid(pooled @ W["fc.weight"].T + W["fc.bias"])
 
-        def enable_dropout(self):
-            for m in self.modules():
-                if isinstance(m, nn.Dropout):
-                    m.train()
-
-    # Build model and load weights (weights are already in ni._cache as numpy)
-    bnn_torch = _BNNDropout(nc=5)
-    state_np  = ni._cache["bnn"]
-
-    # Convert numpy weight dict back to torch state_dict
-    state_torch = {k: torch.tensor(v) for k, v in state_np.items()}
-    bnn_torch.load_state_dict(state_torch, strict=False)
-    bnn_torch.eval()
-    bnn_torch.enable_dropout()    # MC-Dropout: keep dropout active during inference
-
-    x_tensor = torch.tensor(signal[np.newaxis], dtype=torch.float32)  # (1, 12, T)
-    samples  = []
-    with torch.no_grad():
-        for _ in range(n_samples):
-            p = bnn_torch(x_tensor).cpu().numpy()[0]   # (5,)
-            samples.append(p)
-
-    samples = np.stack(samples, axis=0)   # (n_samples, 5)
+    samples = np.stack([_forward_with_dropout() for _ in range(n_samples)], axis=0)
     return samples.mean(axis=0), samples.std(axis=0)
 
 # ── ECG preprocessing (matches cardioai_backend.py exactly) ──
