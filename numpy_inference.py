@@ -257,10 +257,31 @@ def _proposed_forward(x: np.ndarray, W: dict) -> np.ndarray:
     return _sigmoid(h.mean(0) @ W["fc.weight"].T + W["fc.bias"])
 
 
+def _bnn_forward(x: np.ndarray, W: dict) -> np.ndarray:
+    """
+    BNNDropout deterministic forward (dropout=0 — for weight loading / health checks).
+    For proper MC-Dropout inference use _bnn_mc_infer() in api.py which
+    reconstructs the PyTorch model and enables dropout at inference time.
+
+    Architecture mirrors BNNDropout in cardioai_backend.py:
+      dilated Conv1d × 3  →  TransformerEncoder × 2  →  fc  →  sigmoid
+    """
+    # Conv backbone  (same weight keys as TE_Transformer — dilated stack)
+    h = _relu(_dilated_conv1d(x, W["conv1.weight"], W["conv1.bias"], padding=1, dilation=1))
+    h = _relu(_dilated_conv1d(h, W["conv2.weight"], W["conv2.bias"], padding=2, dilation=2))
+    h = _relu(_dilated_conv1d(h, W["conv3.weight"], W["conv3.bias"], padding=4, dilation=4))
+    # TransformerEncoder (2 layers, prefix "transformer.layers.N.")
+    ht = h.T   # (T, 128)
+    for i in range(2):
+        ht = _transformer_layer(ht, f"transformer.layers.{i}.", W)
+    return _sigmoid(ht.mean(0) @ W["fc.weight"].T + W["fc.bias"])
+
+
 _FORWARDS = {
     "te":       _te_forward,
     "gat":      _gat_forward,
     "proposed": _proposed_forward,
+    "bnn":      _bnn_forward,
 }
 
 # ---------------------------------------------------------------------------
@@ -280,13 +301,19 @@ def infer(model_id: str, signal: np.ndarray) -> np.ndarray:
 
     Parameters
     ----------
-    model_id : "te" | "gat" | "proposed"
+    model_id : "te" | "gat" | "proposed" | "bnn"
     signal   : np.ndarray, shape (leads, samples) — float32, already normalised
 
     Returns
     -------
     probs : np.ndarray shape (5,), sigmoid probabilities for
-            [NORM, CD, HYP, MI, STTC]
+            [CD, HYP, MI, NORM, STTC]
+
+    Note
+    ----
+    For the BNN model, this returns the *deterministic* (dropout-off) forward
+    pass, useful for weight-loading checks.  Full MC-Dropout uncertainty
+    estimation is handled by _bnn_mc_infer() in api.py (requires PyTorch).
     """
     if model_id not in _cache:
         raise RuntimeError(f"Model '{model_id}' not loaded. Call load_model() first.")
