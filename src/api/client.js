@@ -7,7 +7,7 @@
 // ─────────────────────────────────────────────────────────────
 
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";
-const TIMEOUT_MS = 15000;
+const TIMEOUT_MS = 60000; // 60s — allows for Render cold-start + model load
 
 async function _fetchWithTimeout(url, options = {}) {
   const controller = new AbortController();
