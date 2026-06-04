@@ -35,17 +35,20 @@ function PolylineWave({ points, stroke, opacity = 1, offset = 0 }) {
 //   4. Extract per-lead signal arrays (column-by-column Y centroid → mV)
 //   5. Write .hea + .dat (WFDB format) and run your trained model
 async function extractSignalsFromPDF(pdfFile, apiBase) {
-  const form = new FormData();
-  form.append('pdfFile', pdfFile);
-
   const RETRY_ATTEMPTS = 5;
   const RETRY_WAIT_MS  = 8000;
+  // Transient HTTP codes from Render's proxy during cold-start / worker restart
+  const TRANSIENT_CODES = new Set([502, 503, 504]);
 
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    // Re-create FormData each attempt — fetch may have consumed the stream
+    const form = new FormData();
+    form.append('pdfFile', pdfFile);
+
     let res;
     try {
       const ctrl = new AbortController();
-      const tid  = setTimeout(() => ctrl.abort(), 90000); // 90s — covers Render cold-start + PDF rasterisation
+      const tid  = setTimeout(() => ctrl.abort(), 90000); // 90s — covers cold-start + PDF rasterisation
       res = await fetch(`${apiBase}/ecg/extract-pdf`, { method: 'POST', body: form, signal: ctrl.signal });
       clearTimeout(tid);
     } catch (netErr) {
@@ -54,11 +57,21 @@ async function extractSignalsFromPDF(pdfFile, apiBase) {
                         String(netErr).toLowerCase().includes('network') ||
                         String(netErr).toLowerCase().includes('failed');
       if ((isTimeout || isNetwork) && attempt < RETRY_ATTEMPTS) {
-        console.warn(`[cardioai-extract] Attempt ${attempt} failed, retrying in ${RETRY_WAIT_MS/1000}s…`);
+        console.warn(`[cardioai-extract] Attempt ${attempt} network/timeout, retrying in ${RETRY_WAIT_MS/1000}s…`);
         await new Promise(r => setTimeout(r, RETRY_WAIT_MS));
         continue;
       }
-      throw new Error('Backend is offline or unreachable. Check that the API service is running on Render.');
+      throw new Error('Backend is offline or unreachable after all retries.');
+    }
+
+    // Retry on transient Render proxy errors (502/503/504) — not just network failures
+    if (TRANSIENT_CODES.has(res.status)) {
+      if (attempt < RETRY_ATTEMPTS) {
+        console.warn(`[cardioai-extract] Attempt ${attempt} got HTTP ${res.status} (transient), retrying in ${RETRY_WAIT_MS/1000}s…`);
+        await new Promise(r => setTimeout(r, RETRY_WAIT_MS));
+        continue;
+      }
+      throw new Error(`Backend returned HTTP ${res.status} after ${RETRY_ATTEMPTS} attempts. The server may be overloaded.`);
     }
 
     if (!res.ok) {
@@ -160,6 +173,8 @@ async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
   const RETRY_WAIT_MS  = 8000;
 
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    // Transient Render proxy codes — retry these too
+    const TRANSIENT = new Set([502, 503, 504]);
     try {
       const ctrl     = new AbortController();
       const tid      = setTimeout(() => ctrl.abort(), 90000); // 90s per attempt
@@ -171,6 +186,9 @@ async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
         signal:  ctrl.signal,
       });
       clearTimeout(tid);
+      if (TRANSIENT.has(response.status)) {
+        throw new Error(`__TRANSIENT_${response.status}__`);
+      }
       if (!response.ok) {
         const errBody = await response.json().catch(() => ({}));
         throw new Error(errBody.error || `Backend error ${response.status}`);
@@ -181,10 +199,11 @@ async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
     } catch (err) {
       clearTimeout && clearTimeout(); // belt-and-braces
       const msg = err?.message ?? String(err);
-      const isTimeout = err?.name === 'AbortError' || msg.includes('aborted');
-      const isNetwork = msg.toLowerCase().includes('failed to fetch') || msg.toLowerCase().includes('networkerror');
+      const isTimeout  = err?.name === 'AbortError' || msg.includes('aborted');
+      const isNetwork  = msg.toLowerCase().includes('failed to fetch') || msg.toLowerCase().includes('networkerror');
+      const isTransient = msg.includes('__TRANSIENT_');
 
-      if ((isTimeout || isNetwork) && attempt < RETRY_ATTEMPTS) {
+      if ((isTimeout || isNetwork || isTransient) && attempt < RETRY_ATTEMPTS) {
         console.warn(`[cardioai-pdf] Attempt ${attempt} failed (${isTimeout ? 'timeout' : 'network'}), retrying in ${RETRY_WAIT_MS/1000}s…`);
         await new Promise(r => setTimeout(r, RETRY_WAIT_MS));
         continue;
