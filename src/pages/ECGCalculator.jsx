@@ -38,35 +38,38 @@ async function extractSignalsFromPDF(pdfFile, apiBase) {
   const form = new FormData();
   form.append('pdfFile', pdfFile);
 
-  let res;
-  try {
-    const ctrl = new AbortController();
-    const tid  = setTimeout(() => ctrl.abort(), 30000); // 30s — image processing can be slow
-    res = await fetch(`${apiBase}/ecg/extract-pdf`, { method: 'POST', body: form, signal: ctrl.signal });
-    clearTimeout(tid);
-  } catch (netErr) {
-    const isOffline =
-      netErr.name === 'AbortError' ||
-      String(netErr).toLowerCase().includes('fetch') ||
-      String(netErr).toLowerCase().includes('network') ||
-      String(netErr).toLowerCase().includes('failed');
-    if (isOffline) {
-      throw new Error(
-        'Flask backend is offline or unreachable. ' +
-        'Start the backend (python api.py) and ensure VITE_API_BASE is set correctly in your .env file.'
-      );
+  const RETRY_ATTEMPTS = 3;
+  const RETRY_WAIT_MS  = 5000;
+
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
+    let res;
+    try {
+      const ctrl = new AbortController();
+      const tid  = setTimeout(() => ctrl.abort(), 60000); // 60s — PDF rasterisation can be slow
+      res = await fetch(`${apiBase}/ecg/extract-pdf`, { method: 'POST', body: form, signal: ctrl.signal });
+      clearTimeout(tid);
+    } catch (netErr) {
+      const isTimeout = netErr.name === 'AbortError';
+      const isNetwork = String(netErr).toLowerCase().includes('fetch') ||
+                        String(netErr).toLowerCase().includes('network') ||
+                        String(netErr).toLowerCase().includes('failed');
+      if ((isTimeout || isNetwork) && attempt < RETRY_ATTEMPTS) {
+        console.warn(`[cardioai-extract] Attempt ${attempt} failed, retrying in ${RETRY_WAIT_MS/1000}s…`);
+        await new Promise(r => setTimeout(r, RETRY_WAIT_MS));
+        continue;
+      }
+      throw new Error('Backend is offline or unreachable. Check that the API service is running on Render.');
     }
-    throw netErr;
-  }
 
-  if (!res.ok) {
-    const errBody = await res.json().catch(() => ({}));
-    throw new Error(errBody.error || `Backend PDF extraction failed (HTTP ${res.status})`);
-  }
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({}));
+      throw new Error(errBody.error || `Backend PDF extraction failed (HTTP ${res.status})`);
+    }
 
-  const body = await res.json();
-  if (!body.success) throw new Error(body.error || 'Signal extraction failed on the backend');
-  return body.data;
+    const body = await res.json();
+    if (!body.success) throw new Error(body.error || 'Signal extraction failed on the backend');
+    return body.data;
+  }
 }
 
 
@@ -151,39 +154,49 @@ async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
   // Step 1 — Vision digitizes the ECG waveforms into numeric signal arrays
   const extracted = await extractSignalsFromPDF(pdfFile, apiBase);
 
-  // Step 2 — Check if backend is reachable (3s timeout, compatible with all browsers)
-  let backendUp = false;
-  try {
-    const ctrl = new AbortController();
-    const tid  = setTimeout(() => ctrl.abort(), 3000);
-    const health = await fetch(`${apiBase}/health`, { signal: ctrl.signal });
-    clearTimeout(tid);
-    backendUp = health.ok;
-  } catch { backendUp = false; }
+  // Step 2 — Send signals to backend with retry logic (no pre-flight health check).
+  // Retries handle cold-starts; only fall back to mock if backend is fully unreachable.
+  const RETRY_ATTEMPTS = 3;
+  const RETRY_WAIT_MS  = 5000;
 
-  if (backendUp) {
-    // Backend running — send signals; it writes .hea + .dat and runs the real model
+  for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
     try {
-      const record = pdfFile.name.replace(/\.pdf$/i, '');
+      const ctrl     = new AbortController();
+      const tid      = setTimeout(() => ctrl.abort(), 90000); // 90s per attempt
+      const record   = pdfFile.name.replace(/\.pdf$/i, '');
       const response = await fetch(`${apiBase}/ecg/analyze-from-signal`, {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modelId, threshold, record, leads: extracted.leads, fs: extracted.fs ?? 100 }),
+        body:    JSON.stringify({ modelId, threshold, record, leads: extracted.leads, fs: extracted.fs ?? 100 }),
+        signal:  ctrl.signal,
       });
+      clearTimeout(tid);
       if (!response.ok) {
-        const err = await response.json().catch(() => ({}));
-        throw new Error(err.error || `Backend error ${response.status}`);
+        const errBody = await response.json().catch(() => ({}));
+        throw new Error(errBody.error || `Backend error ${response.status}`);
       }
       const result = await response.json();
       if (!result.success) throw new Error(result.error || 'Analysis failed');
       return { ...result, pdfSummary: extracted.summary ?? '', pdfFindings: extracted.findings ?? [], _fromPDF: true };
     } catch (err) {
-      // Backend was up but analyze-from-signal failed — surface the real error
-      throw new Error(`Model inference failed: ${err.message}`);
+      clearTimeout && clearTimeout(); // belt-and-braces
+      const msg = err?.message ?? String(err);
+      const isTimeout = err?.name === 'AbortError' || msg.includes('aborted');
+      const isNetwork = msg.toLowerCase().includes('failed to fetch') || msg.toLowerCase().includes('networkerror');
+
+      if ((isTimeout || isNetwork) && attempt < RETRY_ATTEMPTS) {
+        console.warn(`[cardioai-pdf] Attempt ${attempt} failed (${isTimeout ? 'timeout' : 'network'}), retrying in ${RETRY_WAIT_MS/1000}s…`);
+        await new Promise(r => setTimeout(r, RETRY_WAIT_MS));
+        continue;
+      }
+      // Genuinely offline after all retries → fall back to mock
+      if (isNetwork) return _mockPDFResult(extracted, pdfFile, modelId, threshold);
+      // Any other error (backend 500, bad data, etc.) → surface it
+      throw new Error(`Model inference failed: ${msg}`);
     }
   }
 
-  // Backend offline — use mock model probabilities with extracted waveform data
+  // All retries exhausted on timeout → fall back to mock
   return _mockPDFResult(extracted, pdfFile, modelId, threshold);
 }
 
