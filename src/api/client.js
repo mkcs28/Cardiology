@@ -7,7 +7,9 @@
 // ─────────────────────────────────────────────────────────────
 
 const BASE = import.meta.env.VITE_API_BASE ?? "/api";
-const TIMEOUT_MS = 60000; // 60s — allows for Render cold-start + model load
+const TIMEOUT_MS  = 90000; // 90s per attempt — covers worst-case cold-start
+const MAX_RETRIES = 3;     // auto-retry on timeout/network error (cold-start warmup)
+const RETRY_DELAY = 5000;  // wait 5s between retries
 
 async function _fetchWithTimeout(url, options = {}) {
   const controller = new AbortController();
@@ -18,15 +20,39 @@ async function _fetchWithTimeout(url, options = {}) {
     return res;
   } catch (err) {
     clearTimeout(id);
-    // Replace opaque browser errors with actionable messages
     const msg = err?.message ?? String(err);
     if (err?.name === "AbortError" || msg.includes("aborted")) {
-      throw new Error("Request timed out — the backend is still warming up, please try again in a few seconds.");
+      throw new Error("__TIMEOUT__");
     }
     if (msg.toLowerCase().includes("failed to fetch") || msg.toLowerCase().includes("networkerror")) {
-      throw new Error("Cannot reach the backend. Check that the API service is running on Render.");
+      throw new Error("__NETWORK__");
     }
     throw err;
+  }
+}
+
+// Retrying wrapper — transparently retries on timeout/network errors
+async function _fetchWithRetry(url, options = {}, retries = MAX_RETRIES) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      return await _fetchWithTimeout(url, options);
+    } catch (err) {
+      const msg = err?.message ?? "";
+      const retryable = msg === "__TIMEOUT__" || msg === "__NETWORK__";
+      if (retryable && attempt < retries) {
+        console.warn(`[cardioai] Attempt ${attempt} failed (${msg}), retrying in ${RETRY_DELAY / 1000}s…`);
+        await new Promise(r => setTimeout(r, RETRY_DELAY));
+        continue;
+      }
+      // All retries exhausted — surface a friendly message
+      if (msg === "__TIMEOUT__") {
+        throw new Error(`Request timed out after ${retries} attempts — the backend may be overloaded. Please try again shortly.`);
+      }
+      if (msg === "__NETWORK__") {
+        throw new Error("Cannot reach the backend. Check that the API service is running on Render.");
+      }
+      throw err;
+    }
   }
 }
 
@@ -39,7 +65,7 @@ async function _json(res) {
 // ── Check backend availability (always fresh — no stale caching) ──
 async function _isBackendUp() {
   try {
-    const res = await _fetchWithTimeout(`${BASE}/health`);
+    const res = await _fetchWithRetry(`${BASE}/health`);
     return res.ok;
   } catch {
     return false;
@@ -50,7 +76,7 @@ async function _isBackendUp() {
 
 export async function fetchHealth() {
   try {
-    const res = await _fetchWithTimeout(`${BASE}/health`);
+    const res = await _fetchWithRetry(`${BASE}/health`);
     const data = await _json(res);
     return data;
   } catch {
@@ -60,7 +86,7 @@ export async function fetchHealth() {
 
 export async function fetchModelsStatus() {
   if (await _isBackendUp()) {
-    const res = await _fetchWithTimeout(`${BASE}/models/status`);
+    const res = await _fetchWithRetry(`${BASE}/models/status`);
     return _json(res);
   }
   return mockModelsStatus();
@@ -68,7 +94,7 @@ export async function fetchModelsStatus() {
 
 export async function loadModel(modelId) {
   if (await _isBackendUp()) {
-    const res = await _fetchWithTimeout(`${BASE}/models/load`, {
+    const res = await _fetchWithRetry(`${BASE}/models/load`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ modelId }),
@@ -87,7 +113,7 @@ export async function analyzeECG(heaFile, datFile, modelId, threshold = 0.5) {
     form.append("datFile",   datFile);
     form.append("modelId",   modelId);
     form.append("threshold", String(threshold));
-    const res = await _fetchWithTimeout(`${BASE}/ecg/analyze`, {
+    const res = await _fetchWithRetry(`${BASE}/ecg/analyze`, {
       method: "POST",
       body: form,
     });
@@ -102,7 +128,7 @@ export async function analyzeECG(heaFile, datFile, modelId, threshold = 0.5) {
 
 export async function predictCardioRisk(formData) {
   if (await _isBackendUp()) {
-    const res = await _fetchWithTimeout(`${BASE}/cardio/predict`, {
+    const res = await _fetchWithRetry(`${BASE}/cardio/predict`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(formData),
@@ -121,7 +147,7 @@ export async function fetchHistory({ modelId, record, limit = 50 } = {}) {
     if (modelId) params.set("modelId", modelId);
     if (record)  params.set("record",  record);
     params.set("limit", String(limit));
-    const res = await _fetchWithTimeout(`${BASE}/results/history?${params}`);
+    const res = await _fetchWithRetry(`${BASE}/results/history?${params}`);
     return _json(res);
   }
   return { success: true, results: [] };
