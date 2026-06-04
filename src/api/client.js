@@ -18,6 +18,14 @@ async function _fetchWithTimeout(url, options = {}) {
     return res;
   } catch (err) {
     clearTimeout(id);
+    // Replace opaque browser errors with actionable messages
+    const msg = err?.message ?? String(err);
+    if (err?.name === "AbortError" || msg.includes("aborted")) {
+      throw new Error("Request timed out — the backend is still warming up, please try again in a few seconds.");
+    }
+    if (msg.toLowerCase().includes("failed to fetch") || msg.toLowerCase().includes("networkerror")) {
+      throw new Error("Cannot reach the backend. Check that the API service is running on Render.");
+    }
     throw err;
   }
 }
