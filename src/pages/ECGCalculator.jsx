@@ -38,14 +38,14 @@ async function extractSignalsFromPDF(pdfFile, apiBase) {
   const form = new FormData();
   form.append('pdfFile', pdfFile);
 
-  const RETRY_ATTEMPTS = 3;
-  const RETRY_WAIT_MS  = 5000;
+  const RETRY_ATTEMPTS = 5;
+  const RETRY_WAIT_MS  = 8000;
 
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
     let res;
     try {
       const ctrl = new AbortController();
-      const tid  = setTimeout(() => ctrl.abort(), 60000); // 60s — PDF rasterisation can be slow
+      const tid  = setTimeout(() => ctrl.abort(), 90000); // 90s — covers Render cold-start + PDF rasterisation
       res = await fetch(`${apiBase}/ecg/extract-pdf`, { method: 'POST', body: form, signal: ctrl.signal });
       clearTimeout(tid);
     } catch (netErr) {
@@ -156,8 +156,8 @@ async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
 
   // Step 2 — Send signals to backend with retry logic (no pre-flight health check).
   // Retries handle cold-starts; only fall back to mock if backend is fully unreachable.
-  const RETRY_ATTEMPTS = 3;
-  const RETRY_WAIT_MS  = 5000;
+  const RETRY_ATTEMPTS = 5;
+  const RETRY_WAIT_MS  = 8000;
 
   for (let attempt = 1; attempt <= RETRY_ATTEMPTS; attempt++) {
     try {
@@ -189,19 +189,20 @@ async function analyzeECGFromPDF(pdfFile, modelId, threshold, apiBase) {
         await new Promise(r => setTimeout(r, RETRY_WAIT_MS));
         continue;
       }
-      // Genuinely offline after all retries → fall back to mock
-      if (isNetwork) return _mockPDFResult(extracted, pdfFile, modelId, threshold);
-      // Any other error (backend 500, bad data, etc.) → surface it
+      // Surface the error so the user knows inference failed and can retry
+      // (Don't silently mock — that hides real connectivity issues)
+      if (isNetwork) throw new Error('Backend is unreachable after 5 attempts. Click "Wake backend" in the status bar and try again.');
       throw new Error(`Model inference failed: ${msg}`);
     }
   }
 
-  // All retries exhausted on timeout → fall back to mock
-  return _mockPDFResult(extracted, pdfFile, modelId, threshold);
+  // All retries exhausted on timeout
+  throw new Error('Backend timed out after 5 attempts (Render free-tier may be overloaded). Click "Wake backend" and retry.');
 }
 
 
 export default function ECGCalculator() {
+  const [backendOnline, setBackendOnline] = useState(false);
   const [selectedModel, setSelectedModel] = useState('proposed');
   const [threshold,     setThreshold]     = useState(0.5);
   const [heaFile,       setHeaFile]       = useState(null);
@@ -300,7 +301,9 @@ export default function ECGCalculator() {
       </div>
 
       <div className="container">
-        <div style={{ paddingTop: 28 }}><ApiStatusBanner /></div>
+        <div style={{ paddingTop: 28 }}>
+          <ApiStatusBanner onStatusChange={s => setBackendOnline(s === 'online')} />
+        </div>
 
         <div className="ecg-layout">
 
