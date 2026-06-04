@@ -48,6 +48,9 @@ CLASS_LABELS = {
     "STTC": "ST/T-wave Change",
 }
 
+# Number of MC-Dropout stochastic forward passes for BNN
+BNN_SAMPLES = 30
+
 MODEL_REGISTRY = {
     "te":       ("TE Transformer",   "TE_Transformer.pth",  "90.24%"),
     "gat":      ("GAT Transformer",  "GAT_Transformer.pth", "88.14%"),
@@ -62,9 +65,6 @@ MODEL_METRICS = {
     "bnn":      {"sensitivity": "0%", "specificity": "0%", "auc": "95.80%",
                  "inference": "MC-Dropout", "samples": BNN_SAMPLES},
 }
-
-# Number of MC-Dropout stochastic forward passes for BNN
-BNN_SAMPLES = 30
 
 # ── App ───────────────────────────────────────────────────────
 app   = Flask(__name__)
