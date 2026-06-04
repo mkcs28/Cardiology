@@ -614,9 +614,12 @@ def ecg_claude_vision():
 
 
 def _prewarm_models():
-    """Load all model weights into the numpy_inference cache at startup.
-    Runs in a background thread so it doesn't block gunicorn from accepting
-    connections while the weights are being read from disk."""
+    """Load all model weights into the numpy_inference cache.
+    Delayed by 5 s so gunicorn can pass the Render health check before
+    the worker is busy reading ~20 MB of .pth files off disk.
+    Runs in a daemon thread — never blocks request handling."""
+    import time
+    time.sleep(5)   # let /api/health respond first so Render marks instance healthy
     for mid in MODEL_REGISTRY:
         try:
             _load_model(mid)
@@ -624,7 +627,7 @@ def _prewarm_models():
         except Exception as e:
             log.warning(f"Pre-warm skipped for {mid}: {e}")
 
-# Fire pre-warm immediately — works for both `gunicorn api:app` and `python api.py`
+# Start pre-warm for both `gunicorn api:app` and `python api.py`
 threading.Thread(target=_prewarm_models, daemon=True, name="prewarm").start()
 
 if __name__ == "__main__":
