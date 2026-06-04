@@ -9,7 +9,7 @@
 #
 #  Deploy to Render:
 #    Build : pip install -r requirements.txt
-#    Start : gunicorn api:app --bind 0.0.0.0:$PORT --workers 1 --timeout 300 --preload-app
+#    Start : gunicorn api:app --bind 0.0.0.0:$PORT --workers 1 --timeout 300 --preload
 # ============================================================
 
 import os, re, shutil, tempfile, threading, logging, json, sys
