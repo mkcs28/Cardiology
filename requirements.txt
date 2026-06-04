@@ -1,14 +1,14 @@
 # CardioAI Backend Dependencies
-# Install: pip install -r requirements.txt
+# Pinned for reproducible Render builds — avoids mid-download failures on free tier
 
-flask>=3.0
-flask-cors>=4.0
-wfdb>=4.1
-pandas>=2.1
-numpy>=1.26
-scipy>=1.11
-gunicorn>=21.0
+flask==3.0.3
+flask-cors==4.0.1
+wfdb==4.3.1
+pandas==2.2.2
+numpy==1.26.4
+scipy==1.13.1
+gunicorn==22.0.0
 
-pymupdf>=1.23
-opencv-python-headless>=4.8
-requests>=2.31
+pymupdf==1.24.5
+opencv-python-headless==4.10.0.84
+requests==2.32.3
