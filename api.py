@@ -613,6 +613,20 @@ def ecg_claude_vision():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+def _prewarm_models():
+    """Load all model weights into the numpy_inference cache at startup.
+    Runs in a background thread so it doesn't block gunicorn from accepting
+    connections while the weights are being read from disk."""
+    for mid in MODEL_REGISTRY:
+        try:
+            _load_model(mid)
+            log.info(f"Pre-warmed model: {mid}")
+        except Exception as e:
+            log.warning(f"Pre-warm skipped for {mid}: {e}")
+
+# Fire pre-warm immediately — works for both `gunicorn api:app` and `python api.py`
+threading.Thread(target=_prewarm_models, daemon=True, name="prewarm").start()
+
 if __name__ == "__main__":
     log.info(f"CardioAI API · port={PORT} · device={DEVICE} · models={MODELS_DIR}")
     app.run(host="0.0.0.0", port=PORT, debug=False)
