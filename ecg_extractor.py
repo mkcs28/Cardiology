@@ -52,7 +52,7 @@ def pdf_to_images(pdf_bytes: bytes) -> List[np.ndarray]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     images = []
     mat = fitz.Matrix(DPI / 72, DPI / 72)
-    for page in doc:
+    for page in list(doc)[1:]:
         pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
         arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, 3)
         images.append(cv2.cvtColor(arr, cv2.COLOR_RGB2BGR))
