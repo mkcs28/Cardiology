@@ -260,7 +260,7 @@ export default function Home() {
                 {[
                   'TE Transformer for temporal ECG feature extraction',
                   'GAT Transformer leveraging graph attention networks',
-                  'Proposed hybrid model achieving highest accuracy',
+                  'Hybrid TE+GAT model achieving highest accuracy',
                   'Multi-class arrhythmia classification',
                 ].map((pt, i) => (
                   <div key={i} className="research-point">
@@ -297,7 +297,7 @@ export default function Home() {
                 <div className="model-card featured">
                   <div className="model-card-header">
                     <div className="model-card-icon m"><IconTrophy size={18} /></div>
-                    <span className="model-card-name">Proposed Hybrid Model</span>
+                    <span className="model-card-name">Hybrid TE+GAT</span>
                   </div>
                   <div className="model-card-acc">98.7%</div>
                   <div className="model-card-desc">Ensemble architecture combining TE + GAT for superior accuracy across all arrhythmia classes</div>

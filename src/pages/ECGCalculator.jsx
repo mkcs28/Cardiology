@@ -8,7 +8,7 @@ import { useApi } from '../api/useApi';
 const MODELS = [
   { id: 'te',       name: 'TE Transformer',  desc: 'Temporal Encoding transformer for time-series ECG analysis', auc: '90.04%', icon: 'bolt' },
   { id: 'gat',      name: 'GAT Transformer', desc: 'Graph Attention Network for relational pattern learning',     auc: '88.14%', icon: 'link' },
-  { id: 'proposed', name: 'Proposed Model',  desc: 'Hybrid TE + GAT ensemble with superior accuracy',            auc: '90.14%', icon: 'trophy' },
+  { id: 'proposed', name: 'Hybrid TE+GAT',   desc: 'Hybrid TE + GAT ensemble with superior accuracy',            auc: '90.14%', icon: 'trophy' },
   { id: 'bnn',      name: 'BNN (Bayesian)',  desc: 'MC-Dropout Bayesian network with uncertainty estimation',     auc: '95.80%', icon: 'bayes' },
 ];
 
